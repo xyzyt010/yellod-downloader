@@ -23,7 +23,15 @@ Self-hosted media downloader web app. Paste a YouTube (or other yt-dlp supported
 curl -fsSL https://raw.githubusercontent.com/xyzyt010/yellod-installer/main/install.sh | sudo bash
 ```
 
-The installer is a step-by-step terminal wizard: it detects your OS/arch, lets you pick which HDD/SSD (or folder) to store downloads on, downloads the prebuilt binary for your architecture, hardens the systemd service and starts it.
+The installer is a step-by-step terminal wizard: it detects your OS/arch, lets you pick which HDD/SSD (or folder) to store downloads on, downloads the prebuilt binary for your architecture, hardens the systemd service and starts it. Dependencies (ffmpeg, aria2, yt-dlp, deno/node, Tor) are only installed when missing — anything already on the machine is reused as-is.
+
+## Updating
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xyzyt010/yellod-installer/main/install.sh | sudo bash -s -- --update
+```
+
+Keeps your data and settings, refreshes dependencies, replaces the binary and rolls back automatically if the new build does not become healthy. The UI top bar shows the running version and whether a newer release exists.
 
 ## Manual build
 
@@ -44,6 +52,7 @@ cargo build --release
 | `DOWNLOADER_COOKIES_PATH` | `./cookies.txt` | Netscape-format cookies file (used when present) |
 | `DOWNLOADER_YTDLP_BINARY` | auto | Path to the `yt-dlp` binary |
 | `DOWNLOADER_PROXY_URL` | *(empty)* | Proxy for yt-dlp, e.g. `socks5h://127.0.0.1:9050` (Tor). aria2's external downloader is skipped automatically for SOCKS proxies |
+| `DOWNLOADER_PROXY_MODE` | `auto` (when a proxy URL is set) | `auto` = try direct first, fall back to the proxy when a site blocks this server (learned per host); `always`; `never` |
 | `RUST_LOG` | `downloader=info` | Log level |
 
 ## HTTP API
@@ -51,14 +60,16 @@ cargo build --release
 | Method & path | Description |
 |---|---|
 | `POST /api/resolve` | `{ "url": "..." }` → title, thumbnail, formats, recommended tool |
-| `POST /api/download` | `{ "url", "type": "mp3"\|"mp4", "quality", "tool"? }` → `{ job_id }` |
+| `POST /api/download` | `{ "url", "type": "mp3"\|"mp4", "quality", "tool"?, "connection"?: "auto"\|"direct"\|"proxy", "title"?, "thumbnail"? }` → `{ job_id }` |
 | `POST /api/download/batch` | `{ "items": [...] }` → `{ job_ids }` |
-| `GET /api/jobs` | list jobs |
+| `GET /api/jobs` | list jobs (includes the `route` each job used: direct/tor/proxy) |
+| `GET /api/jobs/{id}` | single job |
 | `GET /api/jobs/{id}/file` | download the finished file (proper errors, never a fake file) |
-| `DELETE /api/jobs/{id}` | delete job **and its file on disk** |
+| `DELETE /api/jobs/{id}` | cancel a running job, or delete it **and its file on disk** |
 | `POST /api/jobs/delete/batch` | delete several jobs + files |
 | `POST /api/upload-cookies` | upload a `cookies.txt` (stored chmod 600) |
 | `GET /api/cookies` | cookies status |
+| `GET /api/version` | version + latest GitHub release + detected components (js runtime, aria2c, proxy mode) |
 | `GET /healthz` | health probe |
 | `GET /ws` | WebSocket progress stream |
 
