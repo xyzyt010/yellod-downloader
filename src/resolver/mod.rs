@@ -99,6 +99,7 @@ impl Resolver {
                 languages: vec!["en".into()],
                 recommended_tool: "aria2".into(),
                 extractor: "direct".into(),
+                entries: Vec::new(),
             }
         } else {
             self.resolve_ytdlp(&req.url).await?
@@ -149,6 +150,16 @@ impl Resolver {
     async fn resolve_ytdlp_once(&self, url: &str, use_proxy: bool) -> Result<ResolveResponse, String> {
         let mut cmd = tokio::process::Command::new(self.ytdlp_binary());
         self.apply_ytdlp_base(&mut cmd, use_proxy);
+
+        // A watch URL that names a specific video resolves just that video
+        // (matching download behaviour). Playlists/collections are listed
+        // flat and fast - no deep extraction of every entry, which can take
+        // minutes through a slow route.
+        if url.contains("watch") && url.contains("v=") {
+            cmd.arg("--no-playlist");
+        } else {
+            cmd.arg("--flat-playlist").arg("--playlist-end").arg("100");
+        }
         cmd.arg("-J").arg(url);
 
         let output = cmd.output().await
@@ -232,6 +243,34 @@ impl Resolver {
             .unwrap_or("Unknown")
             .to_string();
 
+        // Playlist listings (flat): keep the URL + title of each entry.
+        let entries: Vec<crate::api::PlaylistEntry> = info
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| {
+                        let title = e.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let url = e
+                            .get("webpage_url")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .or_else(|| {
+                                e.get("url").and_then(|v| v.as_str()).map(|u| {
+                                    if u.starts_with("http") {
+                                        u.to_string()
+                                    } else {
+                                        // YouTube flat entries carry the bare video id.
+                                        format!("https://www.youtube.com/watch?v={}", u)
+                                    }
+                                })
+                            });
+                        url.map(|url| crate::api::PlaylistEntry { url, title })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(ResolveResponse {
             title,
             thumbnail,
@@ -240,6 +279,7 @@ impl Resolver {
             languages,
             recommended_tool: "ytdlp".into(),
             extractor,
+            entries,
         })
     }
 }

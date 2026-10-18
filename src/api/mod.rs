@@ -8,6 +8,12 @@ pub struct ResolveRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistEntry {
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolveResponse {
     pub title: String,
     pub thumbnail: Option<String>,
@@ -16,6 +22,9 @@ pub struct ResolveResponse {
     pub languages: Vec<String>,
     pub recommended_tool: String,
     pub extractor: String,
+    /// Set when the URL is a playlist/collection (flat listing).
+    #[serde(default)]
+    pub entries: Vec<PlaylistEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
