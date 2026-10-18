@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Downloader</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070708;--panel:#101013;--panel2:#151519;--panel3:#1b1b20;--line:#2b2b31;--line2:#393941;--text:#f3f3f5;--muted:#a8a8b2;--dim:#70707b;--orange:#ff5630;--orange2:#ff7a45;--green:#39ff8a;--red:#ff5630;--shadow:0 18px 60px rgba(0,0,0,.35)}
+body{min-height:100vh;background:radial-gradient(circle at top left,rgba(255,86,48,.12),transparent 32rem),linear-gradient(180deg,#0b0b0d 0%,var(--bg) 45%);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:15px;line-height:1.5}
+button,input,select{font:inherit}.wrap{width:100%;max-width:1180px;margin:0 auto;padding:32px 28px 48px}@media(max-width:720px){.wrap{padding:18px 14px 34px}}
+.header{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:18px}.eyebrow{display:flex;align-items:center;gap:8px;color:var(--orange2);font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;margin-bottom:5px}.dot{width:8px;height:8px;border-radius:99px;background:var(--orange);box-shadow:0 0 0 4px rgba(255,86,48,.14)}h1{font-size:34px;line-height:1.05;letter-spacing:-.04em}.subtitle{color:var(--muted);font-size:14px;margin-top:8px;max-width:680px}.status-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:rgba(21,21,25,.8);border-radius:999px;padding:8px 12px;color:var(--muted);font-size:12px;white-space:nowrap}.status-pill.ok .dot{background:var(--green);box-shadow:0 0 0 4px rgba(57,255,138,.12)}.status-pill.bad .dot{background:var(--red)}
+.card{background:linear-gradient(180deg,rgba(21,21,25,.96),rgba(13,13,16,.96));border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}.hero-card{padding:18px;margin-bottom:16px}.url-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:stretch}.url-input{width:100%;min-width:0;background:var(--panel3);border:1px solid var(--line);border-radius:12px;padding:15px 16px;color:var(--text);outline:none;transition:border-color .18s,box-shadow .18s,background .18s}.url-input:focus{border-color:var(--orange);box-shadow:0 0 0 4px rgba(255,86,48,.13);background:#202027}.url-input::placeholder{color:var(--dim)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid transparent;border-radius:12px;padding:12px 16px;font-size:14px;font-weight:800;cursor:pointer;transition:transform .15s,filter .15s,border-color .15s,background .15s,color .15s;white-space:nowrap}.btn:hover:not(:disabled){transform:translateY(-1px)}.btn:disabled{opacity:.55;cursor:not-allowed}.btn-primary{background:linear-gradient(135deg,var(--orange),var(--orange2));color:#fff}.btn-primary:hover:not(:disabled){filter:brightness(1.08)}.btn-ghost{background:var(--panel2);border-color:var(--line);color:var(--muted)}.btn-ghost:hover:not(:disabled){border-color:var(--line2);color:var(--text)}.btn-clear{min-width:48px;padding:12px 14px;font-size:20px;line-height:1}.btn-danger{background:rgba(255,86,48,.09);border-color:rgba(255,86,48,.42);color:var(--red);padding:9px 13px;border-radius:10px;font-size:13px;font-weight:800;cursor:pointer}.btn-danger:hover:not(:disabled){background:var(--red);color:#fff}.btn-danger:disabled{opacity:.45;cursor:not-allowed}.btn-sm{padding:8px 12px;border-radius:10px;font-size:13px}
+.controls-row{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;margin-top:14px}.ctrl-group{min-width:0}.ctrl-label{display:block;margin-bottom:6px;color:var(--dim);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.select-wrap{position:relative}.controls-row select{width:100%;background:var(--panel3);border:1px solid var(--line);border-radius:11px;padding:11px 34px 11px 13px;color:var(--text);outline:none;cursor:pointer;appearance:none}.select-wrap::after{content:"";position:absolute;right:13px;top:50%;width:8px;height:8px;border-right:2px solid var(--dim);border-bottom:2px solid var(--dim);transform:translateY(-65%) rotate(45deg);pointer-events:none}.controls-row select:focus{border-color:var(--orange);box-shadow:0 0 0 3px rgba(255,86,48,.1)}.auto-badge{display:none;margin-top:8px;width:max-content;background:rgba(255,86,48,.12);color:var(--orange2);font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px}.auto-badge:not(:empty){display:inline-block}@media(max-width:860px){.controls-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.header{align-items:flex-start;flex-direction:column}.url-row{grid-template-columns:1fr}.controls-row{grid-template-columns:1fr}.btn{width:100%}}
+.error-banner{display:none;position:relative;margin-bottom:16px;padding:14px 44px 14px 16px;background:rgba(255,86,48,.1);border:1px solid rgba(255,86,48,.55);border-radius:14px;color:#ffb6a6;font-size:13px;line-height:1.55;white-space:pre-wrap}.error-banner strong{display:block;color:#fff;margin-bottom:4px}.error-close{position:absolute;right:10px;top:10px;width:28px;height:28px;border:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.18);color:#ffb6a6;border-radius:8px;cursor:pointer}
+.meta{display:flex;gap:16px;align-items:center;padding:16px;background:var(--panel);border:1px solid var(--line);border-radius:16px;margin-bottom:16px}.meta img{width:112px;height:78px;object-fit:cover;border-radius:12px;background:var(--panel3);border:1px solid var(--line)}.meta .info{min-width:0;flex:1}.meta .title{font-size:16px;font-weight:850;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta .sub{color:var(--muted);font-size:13px;margin-top:3px}.meta.loading{color:var(--muted);justify-content:center}.spinner{display:inline-block;width:17px;height:17px;border:2px solid var(--line2);border-top-color:var(--orange);border-radius:50%;animation:spin .65s linear infinite;vertical-align:-3px;margin-right:8px}@keyframes spin{to{transform:rotate(360deg)}}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;margin-bottom:10px}.tab-bar{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:5px}.tab-btn{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;font-weight:850;padding:9px 13px;border-radius:10px;transition:background .15s,color .15s}.tab-btn.active{background:var(--panel3);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}.tab-count{color:var(--dim);font-weight:800;margin-left:5px}.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:10px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:14px}.toolbar.hidden{display:none}.toolbar .spacer{flex:1}.checkbox{width:18px;height:18px;accent-color:var(--orange);cursor:pointer}.select-all-label{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-weight:750;cursor:pointer}.selected-count{font-size:12px;color:var(--dim)}
+.job-list{display:flex;flex-direction:column;gap:8px}.job-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:13px;align-items:center;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:15px;transition:border-color .15s,background .15s}.job-item:hover{border-color:var(--line2);background:#131317}.job-main{min-width:0}.job-top{display:flex;align-items:center;gap:9px;min-width:0}.job-title{font-size:14px;font-weight:820;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.job-item.error .job-title{color:#ffb6a6}.job-sub{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-top:5px;color:var(--muted);font-size:12px}.status-chip,.tool-badge{display:inline-flex;align-items:center;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:850}.status-chip{background:var(--panel3);color:var(--muted);border:1px solid var(--line)}.status-chip.done{color:var(--green);border-color:rgba(57,255,138,.25);background:rgba(57,255,138,.08)}.status-chip.error{color:#ffb6a6;border-color:rgba(255,86,48,.34);background:rgba(255,86,48,.09)}.tool-badge{background:rgba(255,255,255,.04);color:var(--dim);border:1px solid var(--line)}.job-error{margin-top:7px;color:#ffb6a6;font-size:12px;line-height:1.45;overflow-wrap:anywhere}.progress-bar{height:5px;background:var(--panel3);border-radius:999px;overflow:hidden;margin-top:9px}.progress-bar .fill{height:100%;background:linear-gradient(90deg,var(--orange),var(--orange2));border-radius:999px;transition:width .25s}.job-item.done .fill{background:var(--green)}.job-item.error .fill{background:var(--red)}.job-actions{display:flex;gap:7px;align-items:center}.empty{border:1px dashed var(--line);border-radius:16px;text-align:center;padding:44px 20px;color:var(--dim);font-size:14px;background:rgba(255,255,255,.015)}.empty strong{display:block;color:var(--muted);font-size:15px;margin-bottom:4px}.speed{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}.playlist-box{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:16px}.playlist-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line)}.playlist-list{max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:5px}.playlist-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px}.playlist-item:hover{background:var(--panel2)}.playlist-title{min-width:0;flex:1;color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:var(--panel)}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:99px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="header">
+    <div>
+      <div class="eyebrow"><span class="dot"></span>Media downloader</div>
+      <h1>Downloader</h1>
+      <p class="subtitle">Paste a link, choose the output, and keep track of downloads in one clean queue. YouTube may require account cookies if the server IP is blocked.</p>
+    </div>
+    <div id="wsStatus" class="status-pill"><span class="dot"></span><span>Connecting</span></div>
+  </header>
+
+  <div id="errorBanner" class="error-banner"></div>
+
+  
+  <section class="card" id="cookieSection" style="padding:16px;margin-bottom:16px;display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:850;font-size:14px">Account Cookies</div>
+        <div style="color:var(--muted);font-size:12px;margin-top:3px">Upload cookies.txt from a logged-in YouTube/Google browser session to bypass bot detection.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="cookieStatus" style="font-size:12px;color:var(--dim)">Checking...</span>
+        <label class="btn btn-ghost btn-sm" style="cursor:pointer">
+          Upload cookies.txt
+          <input type="file" id="cookieFileInput" accept=".txt" style="display:none">
+        </label>
+      </div>
+    </div>
+  </section>
+  <section class="card hero-card">
+    <div class="url-row">
+      <input class="url-input" id="urlInput" placeholder="Paste a YouTube, SoundCloud, TikTok, direct media, or playlist URL" autofocus>
+      <button class="btn btn-ghost btn-clear" id="clearBtn" title="Clear input">&times;</button>
+      <button class="btn btn-primary" id="downloadBtn">⬇ Download</button>
+    </div>
+
+    <div class="controls-row">
+      <div class="ctrl-group">
+        <span class="ctrl-label">Tool</span>
+        <div class="select-wrap"><select id="selTool"><option value="auto" selected>Auto recommended</option><option value="ytdlp">yt-dlp</option><option value="aria2">aria2 direct</option></select></div>
+        <span class="auto-badge" id="autoBadge"></span>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Type</span>
+        <div class="select-wrap"><select id="selType"><option value="mp3" selected>MP3 audio</option><option value="mp4">MP4 video</option></select></div>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Quality</span>
+        <div class="select-wrap"><select id="selQuality"></select></div>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Language</span>
+        <div class="select-wrap"><select id="selLang"><option value="en" selected>English</option></select></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="metaBox"></div>
+
+  <div class="section-head">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="active">Active <span class="tab-count" id="activeCount">0</span></button>
+      <button class="tab-btn" data-tab="history">History <span class="tab-count" id="historyCount">0</span></button>
+    </div>
+  </div>
+
+  <div id="toolbar" class="toolbar hidden">
+    <label class="select-all-label"><input type="checkbox" class="checkbox" id="selectAll"> Select all</label>
+    <span class="selected-count" id="selectedCount"></span>
+    <span class="spacer"></span>
+    <button class="btn-danger" id="deleteSelectedBtn" disabled>Delete selected</button>
+    <button class="btn-danger" id="deleteAllBtn">Delete all</button>
+  </div>
+
+  <div id="jobList" class="job-list"></div>
+</div>
+<script>
+let ws;
+let reconnectTimer;
+let jobs={};
+let meta=null;
+let currentTab='active';
+let pollInterval;
+let selected=new Set();
+let resolving=false;
+let starting=false;
+const qs=s=>document.querySelector(s);
+const qsa=s=>Array.from(document.querySelectorAll(s));
+const ACTIVE_STATUSES=new Set(['queued','downloading','resolving','active','waiting','paused']);
+const DONE_STATUSES=new Set(['done','error','cancelled','complete','removed']);
+const DEFAULT_QUALITIES={mp3:['320kbps','256kbps','192kbps','128kbps'],mp4:['1080p','720p','480p','360p']};
+function isActiveStatus(s){return ACTIVE_STATUSES.has(s)}
+function isDoneStatus(s){return DONE_STATUSES.has(s)}
+function esc(v){const d=document.createElement('div');d.textContent=v==null?'':String(v);return d.innerHTML}
+function setWsStatus(text,ok){const el=qs('#wsStatus');el.classList.toggle('ok',!!ok);el.classList.toggle('bad',ok===false);el.querySelector('span:last-child').textContent=text}
+function showError(msg,title='Download problem'){const b=qs('#errorBanner');b.style.display='block';b.innerHTML='<button class="error-close" onclick="hideError()">×</button><strong>'+esc(title)+'</strong>'+esc(msg||'Unknown error')}
+function hideError(){qs('#errorBanner').style.display='none'}
+function setBusy(){qs('#downloadBtn').disabled=starting;qs('#downloadBtn').textContent=starting?'Starting...':'⬇ Download'}
+function currentItems(){const list=Object.values(jobs);return currentTab==='active'?list.filter(j=>isActiveStatus(j.status)):list.filter(j=>isDoneStatus(j.status))}
+function updateCounts(){const list=Object.values(jobs);qs('#activeCount').textContent=list.filter(j=>isActiveStatus(j.status)).length;qs('#historyCount').textContent=list.filter(j=>isDoneStatus(j.status)).length}
+function initWS(){clearTimeout(reconnectTimer);const proto=location.protocol==='https:'?'wss:':'ws:';ws=new WebSocket(proto+'//'+location.host+'/ws');ws.onopen=()=>setWsStatus('Live',true);ws.onclose=()=>{setWsStatus('Reconnecting',false);reconnectTimer=setTimeout(initWS,2000)};ws.onerror=()=>setWsStatus('Connection issue',false);ws.onmessage=e=>{try{const u=JSON.parse(e.data);if(!u.job_id)return;const prev=jobs[u.job_id]&&jobs[u.job_id].status;Object.assign(jobs[u.job_id]=jobs[u.job_id]||{},u);if(u.status==='error'){showError(u.error_message||'Download failed. Open History for details.','Download failed');fetchJobs();showTab('history')}if(prev!=='done'&&u.status==='done')autoDownload(u.job_id);renderJobs()}catch{}}}
+function autoDownload(id){const a=document.createElement('a');a.href='/api/jobs/'+id+'/file';a.download='';document.body.appendChild(a);a.click();a.remove()}
+function showTab(tab){currentTab=tab;selected.clear();qsa('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));renderJobs()}
+function toggleSelectAll(){const checked=qs('#selectAll').checked;const items=currentItems();if(checked)items.forEach(j=>selected.add(j.job_id));else selected.clear();renderJobs()}
+function toggleSelect(id){selected.has(id)?selected.delete(id):selected.add(id);renderJobs()}
+function updateToolbar(){const items=currentItems();qs('#toolbar').classList.toggle('hidden',!items.length);qs('#selectedCount').textContent=selected.size?selected.size+' selected':'';qs('#deleteSelectedBtn').disabled=!selected.size;qs('#selectAll').checked=items.length>0&&items.every(j=>selected.has(j.job_id));updateCounts()}
+async function deleteSelected(){if(!selected.size)return;const ids=[...selected];try{await fetch('/api/jobs/delete/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ids)})}catch{}ids.forEach(id=>{delete jobs[id];selected.delete(id)});renderJobs()}
+async function deleteAll(){if(!confirm('Delete all jobs from the list?'))return;try{await fetch('/api/jobs/delete/all',{method:'POST'})}catch{}jobs={};selected.clear();renderJobs()}
+function setQualityOptions(values){const q=qs('#selQuality');q.innerHTML='';values.forEach((value,i)=>{const o=document.createElement('option');o.value=value;o.textContent=value;if(i===0)o.selected=true;q.appendChild(o)})}
+function updateQualityOptions(){const type=qs('#selType').value;if(meta&&Array.isArray(meta.formats)){const list=meta.formats.filter(f=>f.media_type===type).map(f=>f.quality).filter(Boolean);if(list.length){setQualityOptions([...new Set(list)]);return}}setQualityOptions(DEFAULT_QUALITIES[type]||['best'])}
+function updateLanguageOptions(languages){const l=qs('#selLang');l.innerHTML='';(languages&&languages.length?languages:['en']).forEach((v,i)=>{const o=document.createElement('option');o.value=v;o.textContent=v==='en'?'English':v;if(i===0)o.selected=true;l.appendChild(o)})}
+function clearMeta(){meta=null;qs('#metaBox').innerHTML='';qs('#autoBadge').textContent='';hideError();updateQualityOptions()}
+function renderMeta(d){const thumb=d.thumbnail?'<img src="'+esc(d.thumbnail)+'" onerror="this.style.display=\'none\'">':'';const sub=[d.extractor||'',d.duration?fmtDur(d.duration):'',d.recommended_tool?'Tool: '+d.recommended_tool:''].filter(Boolean).join(' · ');qs('#metaBox').innerHTML='<div class="meta">'+thumb+'<div class="info"><div class="title">'+esc(d.title||'Resolved media')+'</div><div class="sub">'+esc(sub)+'</div></div></div>'}
+function renderPlaylist(d){const items=d.entries.map((e,i)=>'<div class="playlist-item"><input type="checkbox" class="checkbox playlist-cb" data-idx="'+i+'" checked><span class="playlist-title">'+esc(e.title||'Video '+(i+1))+'</span></div>').join('');qs('#metaBox').innerHTML='<div class="meta"><div class="info"><div class="title">'+esc(d.title||'Playlist')+'</div><div class="sub">'+d.entries.length+' items selected by default</div></div></div><div class="playlist-box"><div class="playlist-header"><label class="select-all-label"><input type="checkbox" class="checkbox" id="selectPlaylistAll" checked> Select all</label><button class="btn btn-primary btn-sm" id="playlistDownloadBtn">Download selected</button></div><div class="playlist-list">'+items+'</div></div>';qs('#selectPlaylistAll').addEventListener('change',togglePlaylistAll);qs('#playlistDownloadBtn').addEventListener('click',downloadPlaylist)}
+async function resolveUrl(url){if(!url){clearMeta();return}resolving=true;qs('#metaBox').innerHTML='<div class="meta loading"><span class="spinner"></span>Resolving link...</div>';hideError();try{const r=await fetch('/api/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});if(!r.ok){const err=await r.text();meta=null;qs('#autoBadge').textContent='';showError(err||'Failed to resolve URL',err.includes('YouTube')?'YouTube is blocking this server':'Resolve failed');qs('#metaBox').innerHTML='<div class="empty"><strong>Could not resolve this link</strong>Check the URL or try a different tool.</div>';updateQualityOptions();return}const d=await r.json();meta=d;qs('#autoBadge').textContent=d.recommended_tool?'Auto → '+d.recommended_tool:'';updateQualityOptions();updateLanguageOptions(d.languages);if(d.entries&&d.entries.length)renderPlaylist(d);else renderMeta(d)}catch(e){showError('Failed to resolve URL: '+e,'Resolve failed');qs('#metaBox').innerHTML='<div class="empty"><strong>Resolve failed</strong>The server did not return metadata.</div>'}finally{resolving=false}}
+function togglePlaylistAll(){const checked=qs('#selectPlaylistAll').checked;qsa('.playlist-cb').forEach(cb=>cb.checked=checked)}
+async function downloadPlaylist(){if(!meta||!meta.entries)return;const chosen=[];qsa('.playlist-cb').forEach(cb=>{if(cb.checked)chosen.push(meta.entries[parseInt(cb.dataset.idx,10)])});if(!chosen.length){showError('Select at least one playlist item.','Nothing selected');return}const tool=qs('#selTool').value,type=qs('#selType').value,quality=qs('#selQuality').value,language=qs('#selLang').value;for(const entry of chosen){try{const r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:entry.url||entry.webpage_url,type,quality,language,tool:tool==='auto'?null:tool})});if(!r.ok){showError(await r.text()||'Failed to start playlist item','Download failed');continue}const d=await r.json();if(d.job_id){jobs[d.job_id]={job_id:d.job_id,status:'queued',progress:0,speed:0,title:entry.title||entry.url||entry.webpage_url};pollJobs();renderJobs()}}catch(e){showError('Failed to start playlist item: '+e,'Download failed')}}}
+async function startDownload(){const url=qs('#urlInput').value.trim();if(!url)return;if(meta&&meta.entries&&meta.entries.length){downloadPlaylist();return}starting=true;setBusy();hideError();const tool=qs('#selTool').value,type=qs('#selType').value,quality=qs('#selQuality').value,language=qs('#selLang').value;try{const r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,type,quality,language,tool:tool==='auto'?null:tool})});if(!r.ok){showError(await r.text()||'Failed to start download','Download failed');return}const d=await r.json();if(d.job_id){jobs[d.job_id]={job_id:d.job_id,status:'queued',progress:0,speed:0,title:meta&&meta.title?meta.title:url,tool:tool==='auto'?'auto':tool};showTab('active');pollJobs();renderJobs()}}catch(e){showError('Failed to start download: '+e,'Download failed')}finally{starting=false;setBusy()}}
+async function cancelJob(id){try{await fetch('/api/jobs/'+id,{method:'DELETE'})}catch{}delete jobs[id];selected.delete(id);renderJobs()}
+async function fetchJobs(){try{const r=await fetch('/api/jobs');const list=await r.json();list.forEach(j=>{const id=j.id;if(!jobs[id])jobs[id]={};Object.assign(jobs[id],{job_id:id,status:j.status,progress:j.progress||0,speed:jobs[id].speed||0,title:j.title||j.source_url,media_type:j.media_type,quality:j.quality,tool:j.tool,file_path:j.file_path,file_size:j.file_size,error_message:j.error_message})});renderJobs()}catch{}}
+function pollJobs(){if(pollInterval)return;pollInterval=setInterval(fetchJobs,2000);setTimeout(()=>{clearInterval(pollInterval);pollInterval=null},120000)}
+function statusLabel(status){if(status==='done')return'Done';if(status==='active')return'Downloading';if(status==='error')return'Error';if(status==='cancelled')return'Cancelled';return String(status||'queued').replace(/_/g,' ')}
+function renderJobs(){const items=currentItems();updateCounts();if(!items.length){qs('#jobList').innerHTML='<div class="empty"><strong>'+(currentTab==='active'?'No active downloads':'No history yet')+'</strong>'+(currentTab==='active'?'Paste a URL above to start a job.':'Finished and failed jobs appear here.')+'</div>';updateToolbar();return}qs('#jobList').innerHTML=items.map(j=>{const pct=Math.max(0,Math.min(100,j.progress||0));const done=j.status==='done';const err=j.status==='error';const cls=done?'done':err?'error':'';const canDownload=done&&!!j.file_path;const checked=selected.has(j.job_id)?'checked':'';const title=esc(j.title||j.source_url||j.job_id);const tool=j.tool?'<span class="tool-badge">'+esc(j.tool)+'</span>':'';const speed=j.speed?'<span class="speed">'+fmtSpeed(j.speed)+'</span>':'';const quality=j.quality?'<span>'+esc(j.quality)+'</span>':'';const error=j.error_message?'<div class="job-error">'+esc(String(j.error_message).substring(0,240))+'</div>':'';const progress=(isActiveStatus(j.status)||done||err)?'<div class="progress-bar"><div class="fill" style="width:'+pct+'%"></div></div>':'';const action=canDownload?'<a class="btn btn-ghost btn-sm" href="/api/jobs/'+j.job_id+'/file" download>Download</a>':(isActiveStatus(j.status)?'<button class="btn btn-ghost btn-sm" onclick="cancelJob(\''+j.job_id+'\')">Cancel</button>':'');return'<div class="job-item '+cls+'"><input type="checkbox" class="checkbox" '+checked+' onchange="toggleSelect(\''+j.job_id+'\')"><div class="job-main"><div class="job-top"><div class="job-title">'+title+'</div></div><div class="job-sub"><span class="status-chip '+(done?'done':err?'error':'')+'">'+esc(statusLabel(j.status))+'</span>'+tool+quality+speed+(pct>0&&pct<100?'<span>'+Math.round(pct)+'%</span>':'')+'</div>'+error+progress+'</div><div class="job-actions">'+action+'</div></div>'}).join('');updateToolbar()}
+function fmtDur(s){s=Math.round(s||0);const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=String(s%60).padStart(2,'0');return h? h+':'+String(m).padStart(2,'0')+':'+sec : m+':'+sec}
+function fmtSpeed(b){if(b>1048576)return(b/1048576).toFixed(1)+' MB/s';if(b>1024)return(b/1024).toFixed(0)+' KB/s';return b+' B/s'}
+let resolveTimer;
+qs('#urlInput').addEventListener('input',e=>{clearTimeout(resolveTimer);const u=e.target.value.trim();if(!u){clearMeta();return}resolveTimer=setTimeout(()=>resolveUrl(u),450)});
+qs('#urlInput').addEventListener('keydown',e=>{if(e.key==='Enter')startDownload()});
+qs('#clearBtn').addEventListener('click',()=>{qs('#urlInput').value='';clearMeta();qs('#urlInput').focus()});
+qs('#downloadBtn').addEventListener('click',startDownload);
+qs('#selType').addEventListener('change',updateQualityOptions);
+qsa('.tab-btn').forEach(b=>b.addEventListener('click',()=>showTab(b.dataset.tab)));
+qs('#selectAll').addEventListener('change',toggleSelectAll);
+qs('#deleteSelectedBtn').addEventListener('click',deleteSelected);
+qs('#deleteAllBtn').addEventListener('click',deleteAll);qs('#cookieFileInput').addEventListener('change',e=>{if(e.target.files[0])uploadCookies(e.target.files[0]);e.target.value=''});
+updateQualityOptions();initWS();fetchJobs();pollJobs();setBusy();checkCookies();
+
+async function checkCookies(){try{const r=await fetch('/api/cookies');const d=await r.json();const el=qs('#cookieStatus');if(d.exists&&d.has_session){el.textContent='Session cookies active';el.style.color='var(--green)'}else if(d.exists){el.textContent='Cookies found ('+d.lines+' lines, no session)';el.style.color='var(--orange2)'}else{el.textContent='No cookies uploaded';el.style.color='var(--red)';qs('#cookieSection').style.display='block'}}catch{qs('#cookieSection').style.display='block'}}
+async function uploadCookies(file){const fd=new FormData();fd.append('file',file);try{const r=await fetch('/api/upload-cookies',{method:'POST',body:fd});const d=await r.json();if(d.ok){checkCookies();showError(d.message,'Cookies uploaded');setTimeout(hideError,3000)}else{showError(d.error||'Upload failed','Cookie upload failed')}}catch(e){showError('Upload failed: '+e,'Cookie upload error')}}
+</script>
+</body>
+</html>

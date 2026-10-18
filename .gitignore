@@ -1,0 +1,9 @@
+/target
+/downloads
+/downloader.db
+/downloader.db-shm
+/downloader.db-wal
+/cookies.txt
+/logs
+*.bak
+*.bak-*

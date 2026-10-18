@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            asset: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            asset: linux-aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/downloader dist/downloader
+          tar -C dist -czf yellod-downloader-${{ matrix.asset }}.tar.gz downloader
+          sha256sum yellod-downloader-${{ matrix.asset }}.tar.gz > yellod-downloader-${{ matrix.asset }}.tar.gz.sha256
+
+      - name: Upload artifact (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: yellod-downloader-${{ matrix.asset }}
+          path: |
+            yellod-downloader-${{ matrix.asset }}.tar.gz
+            yellod-downloader-${{ matrix.asset }}.tar.gz.sha256
+
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            yellod-downloader-${{ matrix.asset }}.tar.gz
+            yellod-downloader-${{ matrix.asset }}.tar.gz.sha256

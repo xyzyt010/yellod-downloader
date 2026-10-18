@@ -1,0 +1,69 @@
+pub mod handlers;
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveRequest {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveResponse {
+    pub title: String,
+    pub thumbnail: Option<String>,
+    pub duration: Option<u64>,
+    pub formats: Vec<FormatInfo>,
+    pub languages: Vec<String>,
+    pub recommended_tool: String,
+    pub extractor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormatInfo {
+    pub quality: String,
+    pub media_type: String,
+    pub filesize: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadRequest {
+    pub url: String,
+    #[serde(rename = "type")]
+    pub media_type: String,
+    pub quality: String,
+    pub language: Option<String>,
+    pub tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadResponse {
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchDownloadRequest {
+    pub items: Vec<DownloadRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchDownloadResponse {
+    pub job_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Preferences {
+    pub lang: Option<String>,
+    #[serde(rename = "type")]
+    pub media_type: Option<String>,
+    pub quality: Option<String>,
+    pub tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsMessage {
+    pub job_id: Option<String>,
+    pub status: Option<String>,
+    pub progress: Option<f64>,
+    pub speed: Option<f64>,
+    pub eta: Option<f64>,
+}
