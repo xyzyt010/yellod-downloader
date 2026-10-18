@@ -6,9 +6,10 @@ mod db;
 mod ws;
 mod aria2;
 mod config;
+mod net;
 
 use axum::{
-    routing::{get, post, delete},
+    routing::{get, post},
     Router,
     response::Html,
 };
@@ -30,11 +31,23 @@ async fn main() {
     sweep_orphan_job_dirs(&db, &cfg.output_dir);
     let aria2_client = Arc::new(aria2::Aria2Client::new(cfg.aria2_rpc_url.clone()));
     let ws_hub = Arc::new(ws::WsHub::new());
+    let routes = Arc::new(net::RouteCache::new());
+    let js_runtime = net::detect_js_runtime();
+    tracing::info!(
+        "deps: js-runtime={:?}, aria2c={}, proxy={:?} (mode={})",
+        js_runtime,
+        net::have_aria2c(),
+        if cfg.proxy_url.is_empty() { None } else { Some(cfg.proxy_url.as_str()) },
+        cfg.proxy_mode
+    );
     let resolver = Arc::new(resolver::Resolver::new(
         cfg.ytdlp_binary_path.clone(),
         cfg.ytdlp_force_ipv4,
         cfg.proxy_url.clone(),
+        cfg.proxy_mode.clone(),
         cfg.cookies_path.clone(),
+        routes.clone(),
+        js_runtime,
     ));
     let config = Arc::new(cfg.clone());
 
@@ -44,6 +57,7 @@ async fn main() {
         resolver.clone(),
         ws_hub.clone(),
         config.clone(),
+        routes.clone(),
     ));
 
     let state = Arc::new(api::handlers::AppState {
@@ -59,12 +73,13 @@ async fn main() {
         .route("/api/download", post(api::handlers::download))
         .route("/api/download/batch", post(api::handlers::batch_download))
         .route("/api/jobs", get(api::handlers::list_jobs))
+        .route("/api/jobs/{id}", get(api::handlers::get_job).delete(api::handlers::delete_job))
         .route("/api/jobs/{id}/file", get(api::handlers::get_job_file))
-        .route("/api/jobs/{id}", delete(api::handlers::delete_job))
         .route("/api/jobs/delete/batch", post(api::handlers::delete_jobs))
         .route("/api/jobs/delete/all", post(api::handlers::delete_all_jobs))
         .route("/api/upload-cookies", post(api::handlers::upload_cookies))
         .route("/api/cookies", get(api::handlers::check_cookies))
+        .route("/api/version", get(api::handlers::version))
         .route("/ws", get(api::handlers::ws_handler));
 
     let app = Router::new()

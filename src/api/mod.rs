@@ -33,6 +33,14 @@ pub struct DownloadRequest {
     pub quality: String,
     pub language: Option<String>,
     pub tool: Option<String>,
+    /// "auto" (default) | "direct" | "proxy" — network route for this job.
+    #[serde(default)]
+    pub connection: Option<String>,
+    /// Optional display metadata supplied by the UI (from /api/resolve).
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

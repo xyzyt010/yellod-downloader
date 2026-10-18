@@ -8,12 +8,14 @@ Self-hosted media downloader web app. Paste a YouTube (or other yt-dlp supported
 ```
 
 * Rust (axum) single binary, tiny footprint
-* MP3 extraction via yt-dlp + ffmpeg, optional aria2 acceleration
-* Live progress over WebSocket, batch/playlist selection
+* MP3 extraction via yt-dlp + ffmpeg — for MP3 jobs only the audio stream is fetched (no wasted video download)
+* **Smart routing**: tries a direct connection first and automatically falls back to a SOCKS proxy (e.g. Tor) when a site blocks this server; learns per host, so later jobs start on the working route immediately
+* Live progress over WebSocket (real %/speed/ETA for yt-dlp downloads) and instant cancel
+* Batch/playlist selection, multi-link paste, one-click retry for failed jobs
 * One folder per job — only the final MP3/MP4 file is kept, nothing else
 * Deleting a job from history also deletes its file from disk
 * Optional cookies upload for videos that require a signed-in session
-* Optional SOCKS/HTTP proxy (e.g. Tor) to bypass datacenter-IP blocks
+* Reuses what the system already has: `yt-dlp`, `aria2c`, deno/node/bun are detected at startup (aria2c gives multi-connection speed on direct downloads)
 
 ## One-command install (Ubuntu/Debian, x86_64 & arm64)
 

@@ -70,16 +70,23 @@ pub async fn download(
     State(state): State<Arc<AppState>>,
     Json(req): Json<DownloadRequest>,
 ) -> Result<Json<DownloadResponse>, (StatusCode, String)> {
-    let tool = req.tool.as_deref();
-    let job_id = state.queue.enqueue(
-        &req.url,
-        &req.media_type,
-        &req.quality,
-        req.language.as_deref(),
-        tool,
-    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, friendly_error(&e)))?;
+    let job_id = state.queue.enqueue(&spec_from(&req)).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, friendly_error(&e)))?;
 
     Ok(Json(DownloadResponse { job_id }))
+}
+
+fn spec_from(req: &DownloadRequest) -> crate::queue::JobSpec {
+    crate::queue::JobSpec {
+        url: req.url.clone(),
+        media_type: req.media_type.clone(),
+        quality: req.quality.clone(),
+        language: req.language.clone(),
+        tool: req.tool.clone(),
+        connection: req.connection.clone(),
+        title: req.title.clone(),
+        thumbnail: req.thumbnail.clone(),
+    }
 }
 
 pub async fn batch_download(
@@ -87,17 +94,88 @@ pub async fn batch_download(
     Json(req): Json<BatchDownloadRequest>,
 ) -> Result<Json<BatchDownloadResponse>, (StatusCode, String)> {
     let mut job_ids = Vec::new();
-    for item in req.items {
-        let job_id = state.queue.enqueue(
-            &item.url,
-            &item.media_type,
-            &item.quality,
-            item.language.as_deref(),
-            item.tool.as_deref(),
-        ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, friendly_error(&e)))?;
+    for item in &req.items {
+        let job_id = state.queue.enqueue(&spec_from(item)).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, friendly_error(&e)))?;
         job_ids.push(job_id);
     }
     Ok(Json(BatchDownloadResponse { job_ids }))
+}
+
+pub async fn get_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<crate::db::Job>, StatusCode> {
+    match state.db.get_job(&id) {
+        Ok(Some(job)) => Ok(Json(job)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// Current version + (cached) latest GitHub release, so the UI can tell the
+/// user when an update is available.
+pub async fn version(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let current = env!("CARGO_PKG_VERSION");
+    let latest = latest_release("xyzyt010/yellod-downloader").await;
+    let update_available = match latest.as_deref() {
+        Some(tag) => normalize_tag(tag) != current,
+        None => false,
+    };
+    Json(serde_json::json!({
+        "name": "yellod-downloader",
+        "version": current,
+        "latest": latest,
+        "update_available": update_available,
+        "proxy_mode": state.queue.proxy_mode,
+        "proxy_configured": !state.queue.proxy_url.is_empty(),
+        "js_runtime": state.queue.js_runtime,
+        "aria2c": state.queue.aria2c,
+    }))
+}
+
+fn normalize_tag(tag: &str) -> &str {
+    tag.trim().trim_start_matches('v')
+}
+
+/// GitHub "latest release" lookup, cached for an hour (and quiet on failure).
+async fn latest_release(repo: &str) -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static CACHE: OnceLock<Mutex<Option<(Instant, Option<String>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+
+    {
+        let guard = cache.lock().unwrap();
+        if let Some((at, value)) = guard.as_ref() {
+            if at.elapsed().as_secs() < 3600 {
+                return value.clone();
+            }
+        }
+    }
+
+    let fetched = async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .user_agent("yellod-downloader")
+            .build()
+            .ok()?;
+        let resp = client
+            .get(format!("https://api.github.com/repos/{}/releases/latest", repo))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body: serde_json::Value = resp.json().await.ok()?;
+        body.get("tag_name").and_then(|v| v.as_str()).map(|s| s.to_string())
+    }
+    .await;
+
+    let mut guard = cache.lock().unwrap();
+    *guard = Some((Instant::now(), fetched.clone()));
+    fetched
 }
 
 pub async fn list_jobs(

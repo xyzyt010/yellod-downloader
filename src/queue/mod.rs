@@ -1,14 +1,17 @@
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
-use tokio::sync::{Semaphore, RwLock};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::{Semaphore, RwLock, Mutex};
 use std::collections::HashMap;
 use chrono::Utc;
 use uuid::Uuid;
+use dashmap::{DashMap, DashSet};
 use crate::db::{Database, Job};
 use crate::aria2::Aria2Client;
 use crate::resolver::Resolver;
 use crate::ws::WsHub;
 use crate::config::AppConfig;
+use crate::net::{self, RouteCache};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveJob {
@@ -22,6 +25,22 @@ pub struct ActiveJob {
     pub status: String,
     pub progress: f64,
     pub speed: f64,
+    pub route: String,
+}
+
+/// Everything needed to start a job (kept separate so the API layer can
+/// pass UI-supplied metadata such as title/thumbnail through).
+#[derive(Debug, Clone, Default)]
+pub struct JobSpec {
+    pub url: String,
+    pub media_type: String,
+    pub quality: String,
+    pub language: Option<String>,
+    pub tool: Option<String>,
+    /// "auto" (default) | "direct" | "proxy"
+    pub connection: Option<String>,
+    pub title: Option<String>,
+    pub thumbnail: Option<String>,
 }
 
 pub struct QueueManager {
@@ -32,6 +51,14 @@ pub struct QueueManager {
     pub config: Arc<AppConfig>,
     pub active_jobs: Arc<RwLock<HashMap<String, ActiveJob>>>,
     pub semaphore: Arc<Semaphore>,
+    pub route_cache: Arc<RouteCache>,
+    /// Running yt-dlp child processes, so cancel can actually kill them.
+    children: Arc<DashMap<String, Arc<Mutex<tokio::process::Child>>>>,
+    cancelled: Arc<DashSet<String>>,
+    pub js_runtime: Option<&'static str>,
+    pub aria2c: bool,
+    pub proxy_url: String,
+    pub proxy_mode: String,
 }
 
 impl QueueManager {
@@ -41,8 +68,11 @@ impl QueueManager {
         resolver: Arc<Resolver>,
         ws_hub: Arc<WsHub>,
         config: Arc<AppConfig>,
+        route_cache: Arc<RouteCache>,
     ) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
+        let proxy_url = config.proxy_url.trim().to_string();
+        let proxy_mode = config.proxy_mode.trim().to_lowercase();
         Self {
             db,
             aria2,
@@ -51,24 +81,34 @@ impl QueueManager {
             config,
             active_jobs: Arc::new(RwLock::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            route_cache,
+            children: Arc::new(DashMap::new()),
+            cancelled: Arc::new(DashSet::new()),
+            js_runtime: net::detect_js_runtime(),
+            aria2c: net::have_aria2c(),
+            proxy_url,
+            proxy_mode: if proxy_mode.is_empty() { "never".into() } else { proxy_mode },
         }
     }
 
-    pub async fn enqueue(&self, source_url: &str, media_type: &str, quality: &str, language: Option<&str>, tool: Option<&str>) -> Result<String, String> {
+    pub async fn enqueue(&self, spec: &JobSpec) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
-        let effective_tool = match tool {
-            Some(t) => t.to_string(),
-            None => crate::router::detect_tool_full(source_url, false),
+        let effective_tool = match spec.tool.as_deref() {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => crate::router::detect_tool_full(&spec.url, false),
         };
+
+        let title = spec.title.clone().filter(|t| !t.trim().is_empty());
+        let thumbnail = spec.thumbnail.clone().filter(|t| !t.trim().is_empty());
 
         let job = Job {
             id: id.clone(),
-            source_url: source_url.to_string(),
-            title: None,
-            thumbnail_url: None,
-            media_type: media_type.to_string(),
-            quality: quality.to_string(),
-            language: language.map(|l| l.to_string()),
+            source_url: spec.url.clone(),
+            title: title.clone(),
+            thumbnail_url: thumbnail.clone(),
+            media_type: spec.media_type.clone(),
+            quality: spec.quality.clone(),
+            language: spec.language.clone(),
             tool: effective_tool.clone(),
             status: "queued".to_string(),
             progress: 0.0,
@@ -77,6 +117,7 @@ impl QueueManager {
             error_message: None,
             created_at: Utc::now().timestamp(),
             completed_at: None,
+            route: None,
         };
 
         self.db.insert_job(&job).map_err(|e| e.to_string())?;
@@ -84,110 +125,186 @@ impl QueueManager {
         let active = ActiveJob {
             id: id.clone(),
             gid: None,
-            source_url: source_url.to_string(),
-            media_type: media_type.to_string(),
-            quality: quality.to_string(),
-            language: language.map(|l| l.to_string()),
+            source_url: spec.url.clone(),
+            media_type: spec.media_type.clone(),
+            quality: spec.quality.clone(),
+            language: spec.language.clone(),
             tool: effective_tool.clone(),
             status: "queued".to_string(),
             progress: 0.0,
             speed: 0.0,
+            route: "auto".to_string(),
         };
 
         self.active_jobs.write().await.insert(id.clone(), active);
         self.ws_hub.broadcast_status(&id, "queued", 0.0, 0.0, 0.0);
 
         let qm_id = id.clone();
-        let qm_url = source_url.to_string();
-        let qm_mt = media_type.to_string();
-        let qm_q = quality.to_string();
-        let qm_lang = language.map(|l| l.to_string());
-        let qm_tool = effective_tool;
+        let spec = spec.clone();
         let qm_self = Arc::new(self.clone_inner());
+        let tool = effective_tool;
 
         tokio::spawn(async move {
             let _permit = qm_self.semaphore.acquire().await.unwrap();
-            qm_self.process_job(&qm_id, &qm_url, &qm_mt, &qm_q, qm_lang.as_deref(), &qm_tool).await;
+            qm_self.process_job(&qm_id, &spec, &tool).await;
         });
 
         Ok(id)
     }
 
-    async fn process_job(&self, id: &str, url: &str, media_type: &str, quality: &str, language: Option<&str>, tool: &str) {
+    async fn process_job(&self, id: &str, spec: &JobSpec, tool: &str) {
+        self.cancelled.remove(id);
         self.db.update_job_status(id, "downloading", 0.0, None, None, None).ok();
         self.update_active(id, "downloading", 0.0, 0.0).await;
         self.ws_hub.broadcast_status(id, "downloading", 0.0, 0.0, 0.0);
 
         let result = match tool {
-            "ytdlp" => self.process_ytdlp(id, url, media_type, quality, language).await,
-            "aria2" => self.process_aria2_direct(id, url).await,
+            "ytdlp" => match self.process_ytdlp(id, spec).await {
+                Ok(path) => Ok((None, Some(path))),
+                Err(e) => Err(e),
+            },
+            "aria2" => self.process_aria2_direct(id, &spec.url).await,
             _ => Err("Unknown tool".into()),
         };
 
+        let was_cancelled = self.cancelled.remove(id).is_some();
+
         match result {
-            Ok((gid, file_path)) => {
+            Ok((gid, file_path)) if !was_cancelled => {
                 if let Some(ref gid) = gid {
                     self.active_jobs.write().await.entry(id.to_string()).and_modify(|j| j.gid = Some(gid.clone()));
                     self.poll_aria2_progress(id, gid, file_path.as_deref()).await;
                 } else {
                     let fp = file_path.as_deref();
                     let fsize = fp.and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len() as i64);
-                    let title = fp.and_then(|p| std::path::Path::new(p).file_name()).and_then(|n| n.to_str()).map(|s| s.to_string());
-                    if let Some(ref t) = title {
-                        self.db.conn.lock().unwrap().execute("UPDATE jobs SET title=?1 WHERE id=?2", rusqlite::params![t, id]).ok();
+                    if let Some(name) = fp
+                        .and_then(|p| std::path::Path::new(p).file_name())
+                        .and_then(|n| n.to_str())
+                    {
+                        let _ = self.db.set_title_if_empty(id, name);
                     }
                     self.db.update_job_status(id, "done", 100.0, fp, fsize, None).ok();
                     self.ws_hub.broadcast_status(id, "done", 100.0, 0.0, 0.0);
                 }
             }
-            Err(e) => {
-                self.db.update_job_status(id, "error", 0.0, None, None, Some(&e)).ok();
-                self.ws_hub.broadcast_error(id, &e);
+            _ => {
+                // Failed or cancelled: never leave partial files behind.
+                let job_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
+                let _ = std::fs::remove_dir_all(&job_dir);
+                if was_cancelled {
+                    self.db.update_job_status(id, "cancelled", 0.0, None, None, None).ok();
+                    self.ws_hub.broadcast_status(id, "cancelled", 0.0, 0.0, 0.0);
+                } else {
+                    let e = match result {
+                        Err(e) => e,
+                        Ok(_) => "Download cancelled".to_string(),
+                    };
+                    self.db.update_job_status(id, "error", 0.0, None, None, Some(&e)).ok();
+                    self.ws_hub.broadcast_error(id, &e);
+                }
             }
         }
 
         self.active_jobs.write().await.remove(id);
     }
 
-    async fn process_ytdlp(&self, id: &str, url: &str, media_type: &str, quality: &str, language: Option<&str>) -> Result<(Option<String>, Option<String>), String> {
-        self.process_ytdlp_fallback(id, url, media_type, quality, language).await
+    // ------------------------------------------------------------- yt-dlp
+    async fn process_ytdlp(&self, id: &str, spec: &JobSpec) -> Result<String, String> {
+        let host = net::host_of(&spec.url);
+        let proxy_available = !self.proxy_url.is_empty();
+        let override_mode = spec.connection.as_deref();
+
+        let first_proxy = self.route_cache.use_proxy(&host, &self.proxy_mode, override_mode, proxy_available);
+        let mut attempts: Vec<bool> = vec![first_proxy];
+        // In auto mode, transparently retry the other way once (direct → Tor
+        // when a site blocks this server, Tor → direct when the proxy fails).
+        let effective_mode = match override_mode {
+            Some(o) if !o.is_empty() && o != "auto" => o.to_string(),
+            _ => self.proxy_mode.clone(),
+        };
+        if effective_mode == "auto" && proxy_available {
+            attempts.push(!first_proxy);
+        }
+
+        let mut last_error = String::new();
+        for (idx, use_proxy) in attempts.iter().copied().enumerate() {
+            if self.cancelled.contains(id) {
+                return Err("cancelled".into());
+            }
+            match self.run_ytdlp_attempt(id, spec, use_proxy).await {
+                Ok(path) => {
+                    if self.cancelled.contains(id) {
+                        return Err("cancelled".into());
+                    }
+                    let route = net::route_label(use_proxy, &self.proxy_url);
+                    self.route_cache.mark(&host, !use_proxy);
+                    let _ = self.db.set_job_route(id, route);
+                    self.active_jobs.write().await.entry(id.to_string()).and_modify(|j| j.route = route.to_string());
+                    return Ok(path);
+                }
+                Err(e) => {
+                    if self.cancelled.contains(id) {
+                        return Err("cancelled".into());
+                    }
+                    // Remember hosts that need the proxy (and forget hosts
+                    // where direct worked), so the next job starts fast.
+                    if !use_proxy && net::looks_like_route_error(&e) {
+                        self.route_cache.mark(&host, false);
+                    }
+                    last_error = e;
+                    if idx + 1 < attempts.len() {
+                        let next = if attempts[idx + 1] { "the proxy" } else { "a direct connection" };
+                        tracing::info!("job {}: attempt failed, retrying via {}", id, next);
+                    }
+                }
+            }
+        }
+        Err(last_error)
     }
 
-    async fn process_ytdlp_fallback(&self, id: &str, url: &str, media_type: &str, quality: &str, language: Option<&str>) -> Result<(Option<String>, Option<String>), String> {
+    /// One yt-dlp run. `use_proxy` decides direct vs configured proxy.
+    async fn run_ytdlp_attempt(&self, id: &str, spec: &JobSpec, use_proxy: bool) -> Result<String, String> {
         let binary = if self.config.ytdlp_binary_path.is_empty() { "yt-dlp" } else { &self.config.ytdlp_binary_path };
-        // Each job gets its own output directory so concurrent downloads
-        // (or other jobs) can never be mixed up in the snapshot diff below.
         let out_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
         std::fs::create_dir_all(&out_dir).ok();
 
-        // Snapshot directory before download
         let before: std::collections::HashSet<String> = std::fs::read_dir(&out_dir)
             .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
             .unwrap_or_default();
 
         let mut cmd = tokio::process::Command::new(binary);
-        cmd.arg("--js-runtimes").arg("deno")
-            .arg("--user-agent").arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-            .arg("--no-warnings")
+        cmd.arg("--no-warnings")
             .arg("--no-playlist")
+            .arg("--newline")
+            .arg("--progress-template")
+            .arg("download:DLP|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s")
+            .arg("--socket-timeout").arg("20")
+            .arg("--retries").arg("3")
+            .arg("--fragment-retries").arg("3")
+            .arg("--user-agent").arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .arg("-o").arg(format!("{}/%(title)s.%(ext)s", out_dir.display()));
 
-        // aria2c only accepts HTTP proxies, not SOCKS ones. When going through
-        // e.g. Tor (socks5h://...), use yt-dlp's native downloader instead.
-        let aria2_usable = self.config.proxy_url.is_empty()
-            || self.config.proxy_url.starts_with("http://")
-            || self.config.proxy_url.starts_with("https://");
-        if aria2_usable {
-            let mut aria2_args = String::from("aria2c:-x 16 -s 16 -k 1M");
-            if !self.config.proxy_url.is_empty() {
-                aria2_args.push_str(&format!(" --all-proxy={}", self.config.proxy_url));
-            }
-            cmd.arg("--external-downloader").arg("aria2c")
-                .arg("--external-downloader-args").arg(aria2_args);
+        if let Some(rt) = self.js_runtime {
+            cmd.arg("--js-runtimes").arg(rt);
+        }
+        if self.config.ytdlp_force_ipv4 && !use_proxy {
+            cmd.arg("-4");
         }
 
-        if !self.config.proxy_url.is_empty() {
-            cmd.arg("--proxy").arg(&self.config.proxy_url);
+        if use_proxy {
+            // SOCKS proxies (Tor) are only supported by yt-dlp's native
+            // downloader, so no external downloader here. A few parallel
+            // fragments still help on sites that use DASH/HLS.
+            cmd.arg("--proxy").arg(&self.proxy_url);
+            cmd.arg("--concurrent-fragments").arg("4");
+        } else if self.aria2c {
+            // Direct connection: aria2c saturates single-file downloads with
+            // multiple connections - much faster where it is available.
+            cmd.arg("--external-downloader").arg("aria2c")
+                .arg("--external-downloader-args").arg("aria2c:-x 16 -s 16 -k 1M")
+                .arg("--concurrent-fragments").arg("8");
+        } else {
+            cmd.arg("--concurrent-fragments").arg("8");
         }
 
         let cookies_path = std::path::PathBuf::from(&self.config.cookies_path);
@@ -195,58 +312,123 @@ impl QueueManager {
             cmd.arg("--cookies").arg(&cookies_path);
         }
 
-        if media_type == "mp3" {
+        if spec.media_type == "mp3" {
+            // Only fetch the audio stream - never download video just to throw it away.
+            cmd.arg("-f").arg("ba/b");
             cmd.arg("-x").arg("--audio-format").arg("mp3");
-            if let Some(q) = quality.strip_suffix("kbps") {
+            if let Some(q) = spec.quality.strip_suffix("kbps") {
                 cmd.arg("--audio-quality").arg(format!("{}K", q));
             } else {
                 cmd.arg("--audio-quality").arg("0");
             }
         } else {
-            let fmt = if quality == "best" {
-                "bv*+ba/best".to_string()
+            let fmt = if spec.quality == "best" {
+                "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".to_string()
             } else {
-                let h = quality.trim_end_matches('p');
-                format!("bv*[height<={}]+ba/b[height<={}]/best", h, h)
+                let h = spec.quality.trim_end_matches('p');
+                format!("bv*[height<={h}][ext=mp4]+ba[ext=m4a]/bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b", h = h)
             };
             cmd.arg("-f").arg(&fmt).arg("--merge-output-format").arg("mp4");
         }
 
-        if let Some(lang) = language {
-            cmd.arg("--sub-lang").arg(lang);
-        }
+        cmd.arg(&spec.url);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
 
-        if self.config.ytdlp_force_ipv4 {
-            cmd.arg("-4");
-        }
+        let mut child = cmd.spawn().map_err(|e| {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            format!("yt-dlp failed to start: {}", e)
+        })?;
 
-        cmd.arg(url);
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let child = Arc::new(Mutex::new(child));
+        self.children.insert(id.to_string(), child.clone());
 
-        let output = match cmd.output().await {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&out_dir);
-                return Err(format!("yt-dlp download failed: {}", e));
+        let stderr_handle = stderr.map(|se| {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(se);
+                let mut buf = String::new();
+                use tokio::io::AsyncReadExt;
+                let _ = reader.read_to_string(&mut buf).await;
+                buf
+            })
+        });
+
+        if let Some(out) = stdout {
+            let mut lines = BufReader::new(out).lines();
+            let mut last_ws = std::time::Instant::now();
+            let mut last_db = std::time::Instant::now();
+            let mut last_db_pct = -5.0f64;
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(rest) = line.strip_prefix("DLP|") {
+                    if let Some((progress, speed, eta)) = parse_progress(rest) {
+                        self.update_active(id, "downloading", progress, speed).await;
+                        if last_ws.elapsed().as_millis() >= 300 {
+                            self.ws_hub.broadcast_status(id, "downloading", progress, speed, eta);
+                            last_ws = std::time::Instant::now();
+                        }
+                        if last_db.elapsed().as_secs() >= 2 || (progress - last_db_pct).abs() >= 5.0 {
+                            self.db.update_job_status(id, "downloading", progress, None, None, None).ok();
+                            last_db = std::time::Instant::now();
+                            last_db_pct = progress;
+                        }
+                    }
+                }
             }
+        }
+
+        let status = {
+            let mut guard = child.lock().await;
+            guard.wait().await
+        };
+        self.children.remove(id);
+
+        let stderr_text = match stderr_handle {
+            Some(handle) => handle.await.unwrap_or_default(),
+            None => String::new(),
         };
 
-        if !output.status.success() {
+        if self.cancelled.contains(id) {
             let _ = std::fs::remove_dir_all(&out_dir);
-            return Err(format!("yt-dlp error: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err("cancelled".into());
         }
 
-        // Find new file in the directory
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        let status = status.map_err(|e| {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            format!("yt-dlp process error: {}", e)
+        })?;
+
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            let tail = stderr_text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(if tail.is_empty() {
+                format!("yt-dlp exited with {}", status)
+            } else {
+                tail
+            });
+        }
+
+        // Keep only the final media file (no partials, no sidecars).
         let after: std::collections::HashSet<String> = std::fs::read_dir(&out_dir)
             .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
             .unwrap_or_default();
-
-        let new_files: Vec<String> = after.difference(&before).cloned().collect();
+        let mut new_files: Vec<String> = after.difference(&before).cloned().collect();
+        new_files.retain(|f| !f.ends_with(".part") && !f.ends_with(".ytdl"));
+        new_files.sort();
         let file_path = new_files.first().map(|f| out_dir.join(f).to_string_lossy().to_string());
+
         match file_path {
             Some(fp) => {
-                // Only keep the final media file: remove any leftovers
-                // (partial downloads, intermediates, metadata files, ...).
                 if let Ok(rd) = std::fs::read_dir(&out_dir) {
                     for e in rd.flatten() {
                         let p = e.path();
@@ -255,7 +437,7 @@ impl QueueManager {
                         }
                     }
                 }
-                Ok((None, Some(fp)))
+                Ok(fp)
             }
             None => {
                 let _ = std::fs::remove_dir_all(&out_dir);
@@ -264,6 +446,7 @@ impl QueueManager {
         }
     }
 
+    // ------------------------------------------------------------- aria2
     async fn process_aria2_direct(&self, id: &str, url: &str) -> Result<(Option<String>, Option<String>), String> {
         // Per-job directory so concurrent jobs don't share a folder.
         let out_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
@@ -278,8 +461,8 @@ impl QueueManager {
             .unwrap_or_else(|_| std::path::PathBuf::from(out_dir));
         let mut options = serde_json::json!({
             "dir": dir.to_string_lossy().to_string(),
-            "max-connection-per-server": "1",
-            "split": "1",
+            "max-connection-per-server": "16",
+            "split": "16",
             "min-split-size": "1M",
             "allow-overwrite": "true",
             "auto-file-renaming": "false",
@@ -296,9 +479,19 @@ impl QueueManager {
     }
 
     async fn poll_aria2_progress(&self, id: &str, gid: &str, _file_path: Option<&str>) {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(300));
         loop {
             interval.tick().await;
+
+            if self.cancelled.contains(id) {
+                let _ = self.aria2.remove(gid).await;
+                self.cancelled.remove(id);
+                let job_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
+                let _ = std::fs::remove_dir_all(&job_dir);
+                self.db.update_job_status(id, "cancelled", 0.0, None, None, None).ok();
+                self.ws_hub.broadcast_status(id, "cancelled", 0.0, 0.0, 0.0);
+                break;
+            }
 
             match self.aria2.tell_status(gid).await {
                 Ok(status) => {
@@ -321,13 +514,10 @@ impl QueueManager {
                                     if let Some(first_file) = files.first() {
                                         let path = first_file.get("path").and_then(|v| v.as_str()).unwrap_or("");
                                         let fsize = files_val.get("completedLength").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-                                        let title = std::path::Path::new(path)
-                                            .file_name()
-                                            .and_then(|n| n.to_str())
-                                            .map(|s| s.to_string());
-                                        if let Some(t) = title {
-                                            self.db.conn.lock().unwrap().execute("UPDATE jobs SET title=?1 WHERE id=?2", rusqlite::params![t, id]).ok();
+                                        if let Some(name) = std::path::Path::new(path).file_name().and_then(|n| n.to_str()) {
+                                            let _ = self.db.set_title_if_empty(id, name);
                                         }
+                                        let _ = self.db.set_job_route(id, "direct");
                                         self.db.update_job_status(id, "done", 100.0, Some(path), Some(fsize), None).ok();
                                     }
                                 }
@@ -365,11 +555,20 @@ impl QueueManager {
     }
 
     pub async fn cancel_job(&self, id: &str) -> Result<(), String> {
+        self.cancelled.insert(id.to_string());
+
+        // Kill a running yt-dlp process (if any) so a cancel is instant.
+        if let Some((_, child)) = self.children.remove(id) {
+            let mut child = child.lock().await;
+            let _ = child.start_kill();
+        }
+
         if let Some(active) = self.active_jobs.read().await.get(id) {
             if let Some(gid) = &active.gid {
                 let _ = self.aria2.remove(gid).await;
             }
         }
+
         self.db.update_job_status(id, "cancelled", 0.0, None, None, None).map_err(|e| e.to_string())?;
         self.active_jobs.write().await.remove(id);
         self.ws_hub.broadcast_status(id, "cancelled", 0.0, 0.0, 0.0);
@@ -385,6 +584,38 @@ impl QueueManager {
             config: self.config.clone(),
             active_jobs: self.active_jobs.clone(),
             semaphore: self.semaphore.clone(),
+            route_cache: self.route_cache.clone(),
+            children: self.children.clone(),
+            cancelled: self.cancelled.clone(),
+            js_runtime: self.js_runtime,
+            aria2c: self.aria2c,
+            proxy_url: self.proxy_url.clone(),
+            proxy_mode: self.proxy_mode.clone(),
         }
     }
+}
+
+/// Parse one `DLP|downloaded|total|estimate|speed|eta` progress line.
+/// Returns (percent, speed_bytes_per_sec, eta_seconds).
+fn parse_progress(rest: &str) -> Option<(f64, f64, f64)> {
+    let mut parts = rest.split('|');
+    let num = |v: Option<&str>| -> f64 {
+        v.and_then(|x| x.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(0.0)
+    };
+    let downloaded = num(parts.next());
+    let total = num(parts.next()).max(num(parts.next()));
+    let speed = num(parts.next());
+    let eta = num(parts.next());
+
+    if downloaded <= 0.0 && total <= 0.0 {
+        return None;
+    }
+    let progress = if total > 0.0 {
+        (downloaded / total * 100.0).clamp(0.0, 99.5)
+    } else {
+        0.0
+    };
+    Some((progress, speed, eta))
 }

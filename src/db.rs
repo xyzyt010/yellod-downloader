@@ -20,6 +20,9 @@ pub struct Job {
     pub error_message: Option<String>,
     pub created_at: i64,
     pub completed_at: Option<i64>,
+    /// "direct" | "tor" | "proxy" — which network route the download used.
+    #[serde(default)]
+    pub route: Option<String>,
 }
 
 pub struct Database {
@@ -51,14 +54,23 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
             CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);"
         )?;
+        // Migration: older databases do not have the `route` column yet.
+        let has_route = conn
+            .prepare("PRAGMA table_info(jobs)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|name| name == "route");
+        if !has_route {
+            conn.execute_batch("ALTER TABLE jobs ADD COLUMN route TEXT;")?;
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 
     pub fn insert_job(&self, job: &Job) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO jobs (id, source_url, title, thumbnail_url, media_type, quality, language, tool, status, progress, file_path, file_size, error_message, created_at, completed_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            params![job.id, job.source_url, job.title, job.thumbnail_url, job.media_type, job.quality, job.language, job.tool, job.status, job.progress, job.file_path, job.file_size, job.error_message, job.created_at, job.completed_at],
+            "INSERT OR REPLACE INTO jobs (id, source_url, title, thumbnail_url, media_type, quality, language, tool, status, progress, file_path, file_size, error_message, created_at, completed_at, route) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            params![job.id, job.source_url, job.title, job.thumbnail_url, job.media_type, job.quality, job.language, job.tool, job.status, job.progress, job.file_path, job.file_size, job.error_message, job.created_at, job.completed_at, job.route],
         )?;
         Ok(())
     }
@@ -80,7 +92,7 @@ impl Database {
     pub fn get_job(&self, id: &str) -> Result<Option<Job>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, source_url, title, thumbnail_url, media_type, quality, language, tool, status, progress, file_path, file_size, error_message, created_at, completed_at FROM jobs WHERE id=?1"
+            "SELECT id, source_url, title, thumbnail_url, media_type, quality, language, tool, status, progress, file_path, file_size, error_message, created_at, completed_at, route FROM jobs WHERE id=?1"
         )?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
@@ -100,6 +112,7 @@ impl Database {
                 error_message: row.get(12)?,
                 created_at: row.get(13)?,
                 completed_at: row.get(14)?,
+                route: row.get(15)?,
             }))
         } else {
             Ok(None)
@@ -109,7 +122,7 @@ impl Database {
     pub fn list_jobs(&self, limit: i64) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, source_url, title, thumbnail_url, media_type, quality, language, tool, status, progress, file_path, file_size, error_message, created_at, completed_at FROM jobs ORDER BY created_at DESC LIMIT ?1"
+            "SELECT id, source_url, title, thumbnail_url, media_type, quality, language, tool, status, progress, file_path, file_size, error_message, created_at, completed_at, route FROM jobs ORDER BY created_at DESC LIMIT ?1"
         )?;
         let rows = stmt.query_map(params![limit], |row| {
             Ok(Job {
@@ -128,9 +141,27 @@ impl Database {
                 error_message: row.get(12)?,
                 created_at: row.get(13)?,
                 completed_at: row.get(14)?,
+                route: row.get(15)?,
             })
         })?;
         rows.collect()
+    }
+
+    pub fn set_job_route(&self, id: &str, route: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE jobs SET route=?1 WHERE id=?2", params![route, id])?;
+        Ok(())
+    }
+
+    /// Set the display title only when the job does not have one yet
+    /// (the UI-supplied title is nicer than the raw filename).
+    pub fn set_title_if_empty(&self, id: &str, title: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE jobs SET title=?1 WHERE id=?2 AND (title IS NULL OR title='')",
+            params![title, id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_job(&self, id: &str) -> Result<(), rusqlite::Error> {

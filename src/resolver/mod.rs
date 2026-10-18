@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use crate::api::{ResolveRequest, ResolveResponse, FormatInfo};
+use crate::net::{self, RouteCache};
 
 type Cache = Arc<RwLock<HashMap<String, CachedResolve>>>;
 
@@ -17,18 +18,35 @@ pub struct Resolver {
     ytdlp_binary_path: String,
     ytdlp_force_ipv4: bool,
     proxy_url: String,
+    proxy_mode: String,
     cookies_path: String,
+    routes: Arc<RouteCache>,
+    js_runtime: Option<&'static str>,
 }
 
 impl Resolver {
-    pub fn new(ytdlp_binary_path: String, ytdlp_force_ipv4: bool, proxy_url: String, cookies_path: String) -> Self {
+    pub fn new(
+        ytdlp_binary_path: String,
+        ytdlp_force_ipv4: bool,
+        proxy_url: String,
+        proxy_mode: String,
+        cookies_path: String,
+        routes: Arc<RouteCache>,
+        js_runtime: Option<&'static str>,
+    ) -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
             ttl: Duration::from_secs(600),
             ytdlp_binary_path,
             ytdlp_force_ipv4,
-            proxy_url,
+            proxy_url: proxy_url.trim().to_string(),
+            proxy_mode: {
+                let m = proxy_mode.trim().to_lowercase();
+                if m.is_empty() { "never".into() } else { m }
+            },
             cookies_path,
+            routes,
+            js_runtime,
         }
     }
 
@@ -36,14 +54,17 @@ impl Resolver {
         if self.ytdlp_binary_path.is_empty() { "yt-dlp" } else { &self.ytdlp_binary_path }
     }
 
-    fn apply_ytdlp_base(&self, cmd: &mut tokio::process::Command) {
-        cmd.arg("--js-runtimes").arg("deno")
-            .arg("--user-agent").arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-            .arg("--no-warnings");
-        if self.ytdlp_force_ipv4 {
+    fn apply_ytdlp_base(&self, cmd: &mut tokio::process::Command, use_proxy: bool) {
+        if let Some(rt) = self.js_runtime {
+            cmd.arg("--js-runtimes").arg(rt);
+        }
+        cmd.arg("--user-agent").arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+            .arg("--no-warnings")
+            .arg("--socket-timeout").arg("15");
+        if self.ytdlp_force_ipv4 && !use_proxy {
             cmd.arg("-4");
         }
-        if !self.proxy_url.is_empty() {
+        if use_proxy && !self.proxy_url.is_empty() {
             cmd.arg("--proxy").arg(&self.proxy_url);
         }
         let cookies_path = std::path::PathBuf::from(&self.cookies_path);
@@ -95,8 +116,39 @@ impl Resolver {
     }
 
     async fn resolve_ytdlp(&self, url: &str) -> Result<ResolveResponse, String> {
+        let host = net::host_of(url);
+        let proxy_available = !self.proxy_url.is_empty();
+
+        let first_proxy = self.routes.use_proxy(&host, &self.proxy_mode, None, proxy_available);
+        let mut attempts = vec![first_proxy];
+        if self.proxy_mode == "auto" && proxy_available {
+            attempts.push(!first_proxy);
+        }
+
+        let mut last_error = String::new();
+        for (idx, use_proxy) in attempts.iter().copied().enumerate() {
+            match self.resolve_ytdlp_once(url, use_proxy).await {
+                Ok(response) => {
+                    self.routes.mark(&host, !use_proxy);
+                    return Ok(response);
+                }
+                Err(e) => {
+                    if !use_proxy && net::looks_like_route_error(&e) {
+                        self.routes.mark(&host, false);
+                    }
+                    last_error = e;
+                    if idx + 1 < attempts.len() {
+                        tracing::info!("resolve: direct attempt failed, retrying via proxy");
+                    }
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    async fn resolve_ytdlp_once(&self, url: &str, use_proxy: bool) -> Result<ResolveResponse, String> {
         let mut cmd = tokio::process::Command::new(self.ytdlp_binary());
-        self.apply_ytdlp_base(&mut cmd);
+        self.apply_ytdlp_base(&mut cmd, use_proxy);
         cmd.arg("-J").arg(url);
 
         let output = cmd.output().await
@@ -189,33 +241,5 @@ impl Resolver {
             recommended_tool: "ytdlp".into(),
             extractor,
         })
-    }
-
-    pub async fn resolve_direct_url(&self, url: &str, media_type: &str, quality: &str) -> Result<String, String> {
-        let mut cmd = tokio::process::Command::new(self.ytdlp_binary());
-        self.apply_ytdlp_base(&mut cmd);
-
-        if media_type == "mp3" {
-            cmd.arg("-f").arg("bestaudio")
-                .arg("-g")
-                .arg("--audio-format").arg("mp3");
-        } else {
-            let format_str = if quality == "best" {
-                "bestvideo+bestaudio/best".to_string()
-            } else {
-                let h = quality.trim_end_matches('p');
-                format!("bestvideo[height<={}]+bestaudio/best[height<={}]", h, h)
-            };
-            cmd.arg("-f").arg(&format_str).arg("-g");
-        }
-
-        cmd.arg(url);
-
-        let output = cmd.output().await.map_err(|e| format!("yt-dlp -g failed: {}", e))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.lines().next().unwrap_or("").trim().to_string())
     }
 }

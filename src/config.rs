@@ -40,6 +40,8 @@ pub struct AppConfig {
     pub auth_shared_secret: String,
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
+    #[serde(default = "default_proxy_mode")]
+    pub proxy_mode: String,
     #[serde(default = "default_cookies_path")]
     pub cookies_path: String,
     #[serde(default = "default_db_path")]
@@ -68,6 +70,7 @@ impl Default for AppConfig {
             auth_enabled: false,
             auth_shared_secret: String::new(),
             proxy_url: default_proxy_url(),
+            proxy_mode: default_proxy_mode(),
             cookies_path: default_cookies_path(),
             db_path: default_db_path(),
         }
@@ -107,3 +110,23 @@ fn default_db_path() -> String {
 }
 
 fn default_proxy_url() -> String { std::env::var("DOWNLOADER_PROXY_URL").unwrap_or_default() }
+
+/// How the proxy is used: "auto" (direct when it works, proxy when the site
+/// blocks this server), "always", or "never". Defaults to "auto" when a
+/// proxy URL is configured, otherwise "never".
+fn default_proxy_mode() -> String {
+    if let Ok(mode) = std::env::var("DOWNLOADER_PROXY_MODE") {
+        let mode = mode.trim().to_lowercase();
+        if matches!(mode.as_str(), "auto" | "always" | "never") {
+            return mode;
+        }
+        if !mode.is_empty() {
+            return "auto".into();
+        }
+    }
+    if std::env::var("DOWNLOADER_PROXY_URL").map(|u| !u.trim().is_empty()).unwrap_or(false) {
+        "auto".into()
+    } else {
+        "never".into()
+    }
+}
