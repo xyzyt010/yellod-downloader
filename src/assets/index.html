@@ -106,7 +106,8 @@ textarea#url::placeholder{color:var(--dim)}
 .chip.done{color:var(--ok);border-color:rgba(61,220,132,.3);background:rgba(61,220,132,.08)}
 .chip.error{color:var(--err);border-color:rgba(255,107,94,.34);background:rgba(255,107,94,.08)}
 .chip.prog{color:var(--accent2);border-color:rgba(255,138,76,.3);background:rgba(255,138,76,.08)}
-.chip.route{text-transform:capitalize}
+.chip.route.tor{color:var(--warn);border-color:rgba(255,194,71,.34);background:rgba(255,194,71,.08)}
+.chip.route.proxy{color:#8fb5ff;border-color:rgba(143,181,255,.32);background:rgba(143,181,255,.08)}
 .prog{display:flex;align-items:center;gap:8px;margin-top:7px}
 .bar{flex:1;height:5px;border-radius:99px;background:var(--panel3);overflow:hidden;position:relative}
 .bar i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .22s}
@@ -268,6 +269,7 @@ function applyUpdate(u){
   if(typeof u.speed==="number") j.speed=u.speed;
   if(typeof u.eta==="number") j.eta=u.eta;
   if(u.error_message) j.error=u.error_message;
+  if(u.route) j.route=u.route;
   if(j.status==="cancelled"){ removeLocal(j.id); return; }
   if(prev!==j.status){
     if(j.status==="done"){
@@ -323,6 +325,11 @@ function jobFromApi(raw){
 
 /* ------------------------------------------------------------ rendering */
 function label(s){ return {done:"Done",downloading:"Downloading",queued:"Queued",error:"Failed",cancelled:"Cancelled",removed:"Removed"}[s] || (s||"").replace(/_/g," "); }
+const ROUTE_LABEL = {direct:"⚡ Direct", tor:"🧅 Via Tor", proxy:"🛰 Via proxy", auto:"Routing…"};
+function routeText(r){
+  if(!r) return "";
+  return ROUTE_LABEL[r] || r.charAt(0).toUpperCase()+r.slice(1);
+}
 function iconFor(j){ return j.type==="mp3" ? "♪" : "▶"; }
 function ensureNode(j){
   let n = nodes.get(j.id);
@@ -361,7 +368,11 @@ function patch(j){
   const sc=q(".status"); if(sc._v!==j.status){ sc._v=j.status; sc.textContent=label(j.status);
     sc.className="chip status "+(j.status==="done"?"done":j.status==="error"?"error":isActive(j.status)?"prog":"");
   }
-  const rc=q(".route"); const route=j.route||""; if(rc._v!==route){ rc._v=route; rc.textContent=route; rc.style.display=route?"":"none"; }
+  const rc=q(".route"); const route=j.route||""; const rtxt=routeText(route);
+  if(rc._v!==rtxt){
+    rc._v=rtxt; rc.textContent=rtxt; rc.style.display=rtxt?"":"none";
+    rc.classList.toggle("tor",route==="tor"); rc.classList.toggle("proxy",route==="proxy");
+  }
   const tc=q(".tool"); if(tc._v!==j.tool){ tc._v=j.tool; tc.textContent=j.tool||""; tc.style.display=j.tool?"":"none"; }
   const qc=q(".meta-q"); if(qc._v!==j.quality){ qc._v=j.quality; qc.textContent=j.quality||""; qc.style.display=j.quality?"":"none"; }
   const sz=q(".meta-size"); const sizeTxt = j.size? fmtBytes(j.size) : ""; if(sz._v!==sizeTxt){ sz._v=sizeTxt; sz.textContent=sizeTxt; sz.style.display=sizeTxt?"":"none"; }

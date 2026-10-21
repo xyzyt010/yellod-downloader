@@ -231,6 +231,10 @@ impl QueueManager {
             if self.cancelled.contains(id) {
                 return Err("cancelled".into());
             }
+            // Announce which route is in use so the UI can show it while
+            // the download runs (and when auto falls back to the other way).
+            let attempt_label = net::route_label(use_proxy, &self.proxy_url);
+            self.announce_route(id, attempt_label).await;
             match self.run_ytdlp_attempt(id, spec, use_proxy).await {
                 Ok(path) => {
                     if self.cancelled.contains(id) {
@@ -260,6 +264,19 @@ impl QueueManager {
             }
         }
         Err(last_error)
+    }
+
+    /// Record + push the route ("direct" | "tor" | "proxy") that a job is
+    /// using, so the UI shows it while the download is running and it
+    /// survives a page reload before the job has finished.
+    async fn announce_route(&self, id: &str, label: &str) {
+        let _ = self.db.set_job_route(id, label);
+        self.active_jobs
+            .write()
+            .await
+            .entry(id.to_string())
+            .and_modify(|j| j.route = label.to_string());
+        self.ws_hub.broadcast_route(id, label);
     }
 
     /// One yt-dlp run. `use_proxy` decides direct vs configured proxy.
@@ -452,8 +469,21 @@ impl QueueManager {
         let out_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
         std::fs::create_dir_all(&out_dir).ok();
         let out_dir_str = out_dir.to_string_lossy().to_string();
+        // aria2 always goes direct (or through an HTTP proxy when one is
+        // configured, it cannot do SOCKS) — announce that from the start.
+        self.announce_route(id, self.aria2_route_label()).await;
         let gid = self.add_to_aria2(url, &out_dir_str).await?;
         Ok((Some(gid), None))
+    }
+
+    /// aria2c only understands HTTP(S) proxies; with our default Tor SOCKS
+    /// proxy it runs direct.
+    fn aria2_route_label(&self) -> &'static str {
+        if self.config.proxy_url.starts_with("http://") || self.config.proxy_url.starts_with("https://") {
+            "proxy"
+        } else {
+            "direct"
+        }
     }
 
     async fn add_to_aria2(&self, url: &str, out_dir: &str) -> Result<String, String> {
@@ -517,7 +547,7 @@ impl QueueManager {
                                         if let Some(name) = std::path::Path::new(path).file_name().and_then(|n| n.to_str()) {
                                             let _ = self.db.set_title_if_empty(id, name);
                                         }
-                                        let _ = self.db.set_job_route(id, "direct");
+                                        let _ = self.db.set_job_route(id, self.aria2_route_label());
                                         self.db.update_job_status(id, "done", 100.0, Some(path), Some(fsize), None).ok();
                                     }
                                 }
