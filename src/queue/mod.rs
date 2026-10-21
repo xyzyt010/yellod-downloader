@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{Semaphore, RwLock, Mutex};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use chrono::Utc;
 use uuid::Uuid;
 use dashmap::{DashMap, DashSet};
@@ -12,6 +13,27 @@ use crate::resolver::Resolver;
 use crate::ws::WsHub;
 use crate::config::AppConfig;
 use crate::net::{self, RouteCache};
+
+/// Shared progress state of a running download.
+///
+/// The bytes on disk are the source of truth: they work with every
+/// downloader (yt-dlp's own one, aria2c through the external downloader,
+/// fragmented streams) and never jump backwards when a second format
+/// starts. yt-dlp's own counters are used as a more precise floor and to
+/// learn the expected total size.
+#[derive(Default)]
+struct ProgressHint {
+    /// Expected total size in bytes (0 = unknown).
+    total: AtomicU64,
+    /// Bytes downloaded so far.
+    bytes: AtomicU64,
+    /// Last known speed in bytes per second.
+    speed: AtomicU64,
+    /// yt-dlp's own byte counter.
+    dlp_bytes: AtomicU64,
+    /// Set once yt-dlp starts post-processing (merging / converting).
+    processing: AtomicBool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveJob {
@@ -235,7 +257,21 @@ impl QueueManager {
             // the download runs (and when auto falls back to the other way).
             let attempt_label = net::route_label(use_proxy, &self.proxy_url);
             self.announce_route(id, attempt_label).await;
-            match self.run_ytdlp_attempt(id, spec, use_proxy).await {
+
+            // Direct downloads use aria2c (multiple connections); if that
+            // trips over a rate limit, the same route is retried once with
+            // yt-dlp's own downloader before we consider the route broken.
+            let use_aria2c = self.aria2c && !use_proxy;
+            let first = self.run_ytdlp_attempt(id, spec, use_proxy, use_aria2c).await;
+            let result = match first {
+                Err(e) if use_aria2c && net::looks_like_rate_limit(&e) => {
+                    tracing::info!("job {}: aria2c failed ({}), retrying with yt-dlp's downloader", id, e);
+                    self.run_ytdlp_attempt(id, spec, use_proxy, false).await
+                }
+                other => other,
+            };
+
+            match result {
                 Ok(path) => {
                     if self.cancelled.contains(id) {
                         return Err("cancelled".into());
@@ -280,7 +316,13 @@ impl QueueManager {
     }
 
     /// One yt-dlp run. `use_proxy` decides direct vs configured proxy.
-    async fn run_ytdlp_attempt(&self, id: &str, spec: &JobSpec, use_proxy: bool) -> Result<String, String> {
+    async fn run_ytdlp_attempt(
+        &self,
+        id: &str,
+        spec: &JobSpec,
+        use_proxy: bool,
+        use_aria2c: bool,
+    ) -> Result<String, String> {
         let binary = if self.config.ytdlp_binary_path.is_empty() { "yt-dlp" } else { &self.config.ytdlp_binary_path };
         let out_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
         std::fs::create_dir_all(&out_dir).ok();
@@ -293,6 +335,12 @@ impl QueueManager {
         cmd.arg("--no-warnings")
             .arg("--no-playlist")
             .arg("--newline")
+            .arg("--no-simulate")
+            // Expected size of the selected format(s), printed before the
+            // transfer starts. This is what makes a real percentage possible
+            // even when the downloader itself reports no progress.
+            .arg("--print")
+            .arg("before_dl:DLSIZE|%(filesize)s|%(filesize_approx)s")
             .arg("--progress-template")
             .arg("download:DLP|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s")
             .arg("--socket-timeout").arg("20")
@@ -314,11 +362,11 @@ impl QueueManager {
             // fragments still help on sites that use DASH/HLS.
             cmd.arg("--proxy").arg(&self.proxy_url);
             cmd.arg("--concurrent-fragments").arg("4");
-        } else if self.aria2c {
+        } else if use_aria2c && self.aria2c {
             // Direct connection: aria2c saturates single-file downloads with
             // multiple connections - much faster where it is available.
             cmd.arg("--external-downloader").arg("aria2c")
-                .arg("--external-downloader-args").arg("aria2c:-x 16 -s 16 -k 1M")
+                .arg("--external-downloader-args").arg("aria2c:-x 8 -s 8 -k 1M --max-tries=5 --retry-wait=2")
                 .arg("--concurrent-fragments").arg("8");
         } else {
             cmd.arg("--concurrent-fragments").arg("8");
@@ -372,24 +420,112 @@ impl QueueManager {
             })
         });
 
+        // ---- progress tracking -------------------------------------------
+        // The bytes on disk are the source of truth: they work with every
+        // downloader and never jump backwards when a second format starts.
+        let hint = Arc::new(ProgressHint::default());
+        let stop_watch = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let stop = stop_watch.clone();
+            let hint = hint.clone();
+            let job_id = id.to_string();
+            let dir = out_dir.clone();
+            let db = self.db.clone();
+            let ws = self.ws_hub.clone();
+            let active = self.active_jobs.clone();
+            tokio::spawn(async move {
+                let mut last_bytes = 0u64;
+                let mut last_ts = std::time::Instant::now();
+                let mut last_push = std::time::Instant::now() - std::time::Duration::from_secs(2);
+                let mut last_db = std::time::Instant::now() - std::time::Duration::from_secs(5);
+                let mut last_db_pct = -5.0f64;
+                while !stop.load(Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let disk = dir_bytes(&dir);
+                    let now = std::time::Instant::now();
+                    let dt = now.duration_since(last_ts).as_secs_f64().max(0.01);
+                    let speed = disk.saturating_sub(last_bytes) as f64 / dt;
+                    last_bytes = disk;
+                    last_ts = now;
+                    if speed > 0.0 {
+                        hint.speed.store(speed as u64, Ordering::Relaxed);
+                    }
+                    // yt-dlp's own counter is more precise while it streams.
+                    let done = disk.max(hint.dlp_bytes.load(Ordering::Relaxed));
+                    if done == 0 {
+                        continue;
+                    }
+                    hint.bytes.store(done, Ordering::Relaxed);
+                    let total = hint.total.load(Ordering::Relaxed);
+                    let pct = if total > 0 {
+                        (done as f64 / total as f64 * 100.0).clamp(0.0, 99.5)
+                    } else {
+                        0.0
+                    };
+                    let speed = hint.speed.load(Ordering::Relaxed) as f64;
+                    let eta = if total > 0 && speed > 0.0 {
+                        ((total.saturating_sub(done)) as f64 / speed).max(0.0)
+                    } else {
+                        0.0
+                    };
+                    let status = if hint.processing.load(Ordering::Relaxed) { "processing" } else { "downloading" };
+                    if now.duration_since(last_push).as_millis() >= 300 {
+                        last_push = now;
+                        active.write().await.entry(job_id.clone()).and_modify(|j| {
+                            j.status = status.to_string();
+                            j.progress = pct;
+                            j.speed = speed;
+                        });
+                        ws.broadcast_progress(&job_id, status, pct, speed, eta, done);
+                    }
+                    if now.duration_since(last_db).as_secs() >= 2 || (pct - last_db_pct).abs() >= 5.0 {
+                        db.update_job_status(&job_id, status, pct, None, None, None).ok();
+                        last_db = now;
+                        last_db_pct = pct;
+                    }
+                }
+            })
+        };
+
         if let Some(out) = stdout {
             let mut lines = BufReader::new(out).lines();
-            let mut last_ws = std::time::Instant::now();
-            let mut last_db = std::time::Instant::now();
-            let mut last_db_pct = -5.0f64;
+            let mut announced_processing = false;
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Some(rest) = line.strip_prefix("DLP|") {
-                    if let Some((progress, speed, eta)) = parse_progress(rest) {
-                        self.update_active(id, "downloading", progress, speed).await;
-                        if last_ws.elapsed().as_millis() >= 300 {
-                            self.ws_hub.broadcast_status(id, "downloading", progress, speed, eta);
-                            last_ws = std::time::Instant::now();
+                    if let Some((downloaded, total, speed, eta)) = parse_progress(rest) {
+                        hint.dlp_bytes.store(downloaded as u64, Ordering::Relaxed);
+                        if total > 0.0 && hint.total.load(Ordering::Relaxed) == 0 {
+                            // Only use yt-dlp's total when the expected size
+                            // was not printed before the transfer.
+                            hint.total.store(total as u64, Ordering::Relaxed);
                         }
-                        if last_db.elapsed().as_secs() >= 2 || (progress - last_db_pct).abs() >= 5.0 {
-                            self.db.update_job_status(id, "downloading", progress, None, None, None).ok();
-                            last_db = std::time::Instant::now();
-                            last_db_pct = progress;
+                        if speed > 0.0 {
+                            hint.speed.store(speed as u64, Ordering::Relaxed);
                         }
+                        let _ = eta;
+                    }
+                } else if let Some(rest) = line.strip_prefix("DLSIZE|") {
+                    // Expected size of the selected format(s) - the total
+                    // for the percentage (summed when several formats are
+                    // downloaded one after the other).
+                    let size = parse_expected_size(rest);
+                    if size > 0 {
+                        hint.total.fetch_add(size, Ordering::Relaxed);
+                    }
+                } else if is_postprocessing_line(&line) {
+                    // Merging / converting: the transfer is done, ffmpeg is
+                    // working - tell the UI instead of freezing the bar.
+                    if !announced_processing {
+                        announced_processing = true;
+                        hint.processing.store(true, Ordering::Relaxed);
+                        let pct = hint.bytes.load(Ordering::Relaxed) as f64;
+                        let total = hint.total.load(Ordering::Relaxed);
+                        let _ = total;
+                        self.update_active(id, "processing", pct, 0.0).await;
+                        self.ws_hub.broadcast_status(id, "processing", pct, 0.0, 0.0);
                     }
                 }
             }
@@ -399,6 +535,8 @@ impl QueueManager {
             let mut guard = child.lock().await;
             guard.wait().await
         };
+        stop_watch.store(true, Ordering::Relaxed);
+        let _ = watcher.await;
         self.children.remove(id);
 
         let stderr_text = match stderr_handle {
@@ -626,8 +764,8 @@ impl QueueManager {
 }
 
 /// Parse one `DLP|downloaded|total|estimate|speed|eta` progress line.
-/// Returns (percent, speed_bytes_per_sec, eta_seconds).
-fn parse_progress(rest: &str) -> Option<(f64, f64, f64)> {
+/// Returns (downloaded_bytes, total_bytes, speed_bytes_per_sec, eta_seconds).
+fn parse_progress(rest: &str) -> Option<(f64, f64, f64, f64)> {
     let mut parts = rest.split('|');
     let num = |v: Option<&str>| -> f64 {
         v.and_then(|x| x.trim().parse::<f64>().ok())
@@ -642,10 +780,58 @@ fn parse_progress(rest: &str) -> Option<(f64, f64, f64)> {
     if downloaded <= 0.0 && total <= 0.0 {
         return None;
     }
-    let progress = if total > 0.0 {
-        (downloaded / total * 100.0).clamp(0.0, 99.5)
-    } else {
-        0.0
+    Some((downloaded, total, speed, eta))
+}
+
+/// Parse the `DLSIZE|filesize|filesize_approx` line that yt-dlp prints
+/// before the transfer starts. Returns the expected size in bytes (0 when
+/// the size is unknown).
+fn parse_expected_size(rest: &str) -> u64 {
+    let mut parts = rest.split('|');
+    let parse = |v: Option<&str>| -> u64 {
+        v.and_then(|x| x.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.0) as u64
     };
-    Some((progress, speed, eta))
+    let exact = parse(parts.next());
+    let approx = parse(parts.next());
+    if exact > 0 {
+        exact
+    } else {
+        approx
+    }
+}
+
+/// True for yt-dlp's post-processor lines (merging, converting, fixing up).
+fn is_postprocessing_line(line: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "[Merger]",
+        "[ExtractAudio]",
+        "[EmbedSubtitle]",
+        "[EmbedThumbnail]",
+        "[Metadata]",
+        "[FixupM3u8]",
+    ];
+    MARKERS.iter().any(|m| line.starts_with(m))
+}
+
+/// Biggest file in the job folder - that is how much has been downloaded
+/// so far (works with every downloader, also while a second format or
+/// the merge step is running).
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let mut best = 0u64;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with(".ytdl") {
+                continue;
+            }
+            if let Ok(md) = e.metadata() {
+                if md.is_file() && md.len() > best {
+                    best = md.len();
+                }
+            }
+        }
+    }
+    best
 }

@@ -100,6 +100,21 @@ pub fn looks_like_route_error(error: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+/// A rate limit / CDN refusal that another downloader may not hit.
+pub fn looks_like_rate_limit(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    [
+        "http error 429",
+        "too many requests",
+        "errorcode=22",
+        "download aborted",
+        "http error 403",
+        "aria2",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 /// Detect the first usable JavaScript runtime for yt-dlp (YouTube needs one
 /// to solve signatures). Reusing what the system already has avoids extra
 /// installs.

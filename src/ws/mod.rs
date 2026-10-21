@@ -18,6 +18,9 @@ pub struct WsJobUpdate {
     /// (re-)decided, so the UI can show it while the download is running.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// Bytes downloaded so far (for the "x of y" line in the UI).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
 }
 
 pub struct WsHub {
@@ -39,6 +42,30 @@ impl WsHub {
             eta: Some(eta),
             error_message: None,
             route: None,
+            bytes: None,
+        };
+        let _ = self.tx.send(update);
+    }
+
+    /// Progress of a running download, including how many bytes are on disk.
+    pub fn broadcast_progress(
+        &self,
+        job_id: &str,
+        status: &str,
+        progress: f64,
+        speed: f64,
+        eta: f64,
+        bytes: u64,
+    ) {
+        let update = WsJobUpdate {
+            job_id: job_id.to_string(),
+            status: Some(status.to_string()),
+            progress: Some(progress),
+            speed: Some(speed),
+            eta: Some(eta),
+            error_message: None,
+            route: None,
+            bytes: Some(bytes),
         };
         let _ = self.tx.send(update);
     }
@@ -53,6 +80,7 @@ impl WsHub {
             eta: None,
             error_message: None,
             route: Some(route.to_string()),
+            bytes: None,
         };
         let _ = self.tx.send(update);
     }
@@ -66,6 +94,7 @@ impl WsHub {
             eta: Some(0.0),
             error_message: Some(error_message.to_string()),
             route: None,
+            bytes: None,
         };
         let _ = self.tx.send(update);
     }
