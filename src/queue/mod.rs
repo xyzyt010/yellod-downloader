@@ -424,6 +424,21 @@ impl QueueManager {
         // The bytes on disk are the source of truth: they work with every
         // downloader and never jump backwards when a second format starts.
         let hint = Arc::new(ProgressHint::default());
+        // For direct/generic URLs yt-dlp prints no expected size (DLSIZE is
+        // NA) and aria2c reports none either, so the percentage would have no
+        // denominator and sit at 0% until the file is done. Ask the server for
+        // the Content-Length up front - that is the same number aria2c aims
+        // for, so the bar tracks the transfer accurately.
+        {
+            let url = spec.url.clone();
+            let hint = hint.clone();
+            tokio::spawn(async move {
+                let len = head_content_length(&url).await;
+                if let Some(len) = len {
+                    hint.total.store(len, Ordering::Relaxed);
+                }
+            });
+        }
         let stop_watch = Arc::new(AtomicBool::new(false));
         let watcher = {
             let stop = stop_watch.clone();
@@ -802,6 +817,33 @@ fn parse_expected_size(rest: &str) -> u64 {
     }
 }
 
+/// HEAD the source URL and read its Content-Length, so a direct download has
+/// a denominator for the percentage even when yt-dlp cannot report a size.
+async fn head_content_length(url: &str) -> Option<u64> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .ok()?;
+    let resp = client
+        .head(url)
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
+        .send()
+        .await
+        .ok()?;
+    // Note: `resp.content_length()` is not usable here. For a HEAD response
+    // reqwest reports the body length, which is zero by definition, so it
+    // yields Some(0) and hides the size we actually want. The size of the
+    // resource lives in the Content-Length header, so read that directly.
+    resp.headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|len| *len > 0)
+}
+
 /// True for yt-dlp's post-processor lines (merging, converting, fixing up).
 fn is_postprocessing_line(line: &str) -> bool {
     const MARKERS: [&str; 6] = [
@@ -815,23 +857,43 @@ fn is_postprocessing_line(line: &str) -> bool {
     MARKERS.iter().any(|m| line.starts_with(m))
 }
 
-/// Biggest file in the job folder - that is how much has been downloaded
-/// so far (works with every downloader, also while a second format or
-/// the merge step is running).
+/// Bytes really written in the job folder - that is how much has been
+/// downloaded so far (works with every downloader, also while a second
+/// format or the merge step is running).
+///
+/// aria2c pre-allocates its target sparsely, so the file's apparent size is
+/// the full expected length from the first moment. Reporting that would show
+/// 100% instantly and then stand still, which is exactly the frozen bar we are
+/// fixing. Allocated blocks grow only as data actually lands on disk, so they
+/// track the transfer on every route.
 fn dir_bytes(dir: &std::path::Path) -> u64 {
-    let mut best = 0u64;
+    let mut total = 0u64;
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.ends_with(".ytdl") {
+            // Partials and downloader sidecars are not finished media.
+            if name.ends_with(".ytdl") || name.ends_with(".aria2") {
                 continue;
             }
             if let Ok(md) = e.metadata() {
-                if md.is_file() && md.len() > best {
-                    best = md.len();
+                if md.is_file() {
+                    total += file_bytes(&md);
                 }
             }
         }
     }
-    best
+    total
+}
+
+/// Bytes a file really occupies. Falls back to the apparent size when the
+/// platform cannot report allocated blocks.
+fn file_bytes(md: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if md.blocks() > 0 {
+            return md.blocks() * 512;
+        }
+    }
+    md.len()
 }
