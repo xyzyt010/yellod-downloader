@@ -35,7 +35,7 @@ a:hover{text-decoration:underline}
 button,input,select,textarea{font:inherit;color:inherit}
 :focus-visible{outline:none;box-shadow:var(--ring);border-radius:10px}
 [hidden]{display:none!important}
-.wrap{max-width:1120px;margin:0 auto;padding:20px 20px 64px}
+.wrap{max-width:1280px;margin:0 auto;padding:18px 28px 64px}
 @media(max-width:640px){.wrap{padding:14px 12px 80px}}
 
 /* surfaces - one look for every card */
@@ -71,7 +71,7 @@ textarea#url{
 }
 textarea#url:focus{border-color:var(--accent);box-shadow:var(--ring);background:#1d1d24}
 textarea#url::placeholder{color:var(--dim)}
-.controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px}
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:14px}
 .ctrl{min-width:0}
 .ctrl>span{display:block;margin-bottom:7px;color:var(--dim);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.09em}
 .sel{position:relative}
@@ -225,8 +225,8 @@ textarea#url::placeholder{color:var(--dim)}
 @keyframes cardIn{from{opacity:0;transform:translateY(12px) scale(.992)}to{opacity:1;transform:none}}
 .job .pick{margin-top:11px}
 .job .thumb{
-  width:58px;height:41px;border-radius:var(--r-sm);background:linear-gradient(160deg,#1d1d24,#141419);
-  border:1px solid var(--line);display:grid;place-items:center;color:var(--dim);font-size:20px;overflow:hidden;flex:none;
+  width:96px;height:64px;border-radius:var(--r-sm);background:linear-gradient(160deg,#1d1d24,#141419);
+  border:1px solid var(--line);display:grid;place-items:center;color:var(--dim);font-size:22px;overflow:hidden;flex:none;
 }
 .job .thumb img{width:100%;height:100%;object-fit:cover;transition:transform .35s var(--ease)}
 .job:hover .thumb img{transform:scale(1.06)}
@@ -248,7 +248,7 @@ textarea#url::placeholder{color:var(--dim)}
 .chip.prog{color:var(--accent2);border-color:rgba(255,138,76,.28);background:rgba(255,138,76,.08)}
 .chip.status.prog::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;animation:ping2 1.6s ease-out infinite}
 @keyframes ping2{0%{box-shadow:0 0 0 0 rgba(255,138,76,.5)}75%,100%{box-shadow:0 0 0 6px rgba(255,138,76,0)}}
-.chip.route.tor{color:var(--warn);border-color:rgba(255,194,71,.3);background:rgba(255,194,71,.08)}
+.chip.route.tor{color:#c9a7ff;border-color:rgba(168,85,247,.4);background:rgba(168,85,247,.12)}
 .chip.route.proxy{color:var(--info);border-color:rgba(143,181,255,.28);background:rgba(143,181,255,.08)}
 .chip.route.direct{color:var(--accent2);border-color:rgba(255,138,76,.26);background:rgba(255,138,76,.07)}
 .when{color:var(--dim);font-size:12px}
@@ -342,6 +342,20 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
 .toast.out{animation:toastOut .24s ease-in both}
 @keyframes toastOut{to{opacity:0;transform:translateX(24px)}}
 
+/* ============================================================== player */
+.player{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:20px;
+  background:rgba(6,6,9,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  animation:fade .2s ease-out both}
+.player-box{width:min(920px,100%);background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);
+  box-shadow:0 30px 80px rgba(0,0,0,.6);overflow:hidden;animation:playerIn .28s var(--ease) both}
+@keyframes playerIn{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+.player-head{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.player-title{flex:1;min-width:0;font-weight:750;font-size:14.5px;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.player-stage{background:#000;display:grid;place-items:center}
+.player-stage video{width:100%;max-height:74vh;display:block;background:#000}
+.player-stage audio{width:calc(100% - 32px);margin:26px 16px;display:block}
+.player-stage .cover{width:100%;max-height:74vh;object-fit:contain;display:block}
+
 @media(prefers-reduced-motion:reduce){
   *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
@@ -353,7 +367,7 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
   <div class="topbar">
     <div class="logo"><span class="mark" id="logoMark"></span> Yellod Downloader</div>
     <span class="grow"></span>
-    <button class="pill link" id="verPill" title="Version and update check">v–</button>
+    <button class="pill" id="verPill" title="Server version">v–</button>
     <span class="pill" id="wsPill" title="Live connection to the server"><span class="dot"></span><span>Connecting</span></span>
   </div>
 
@@ -380,6 +394,9 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
       <div class="ctrl"><span>When finished</span>
         <label class="switchbox"><span class="switch"><input type="checkbox" id="autoDl" checked></span> Auto-download file</label>
       </div>
+      <div class="ctrl"><span>Cover art</span>
+        <label class="switchbox"><span class="switch"><input type="checkbox" id="embedThumb"></span> Include cover photo</label>
+      </div>
     </div>
   </section>
 
@@ -399,22 +416,15 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
   </div>
 
   <div class="list" id="list"></div>
-
-  <details class="sec" id="cookiesSec">
-    <summary><span class="ico" id="cookieIcon"></span> YouTube cookies <span class="chip" id="cookieChip">checking…</span><span class="ico chev" id="cookieChev"></span></summary>
-    <div class="body">
-      <div>Some videos need a logged-in session (age-restricted, “confirm you're not a bot”). Upload a <code>cookies.txt</code> exported from your browser — it is stored on this server only.</div>
-      <div><label class="btn btn-ghost btn-sm" style="width:max-content;cursor:pointer"><span class="ico" id="uploadIcon"></span>Upload cookies.txt<input type="file" id="cookieFile" accept=".txt" hidden></label></div>
-    </div>
-  </details>
-
-  <details class="sec" id="aboutSec">
-    <summary><span class="ico" id="aboutIcon"></span> Server &amp; update status<span class="ico chev" id="aboutChev"></span></summary>
-    <div class="body" id="aboutBody"><span class="spinner"></span> Loading…</div>
-  </details>
 </div>
 
 <div id="toasts"></div>
+<div id="player" class="player" hidden>
+  <div class="player-box">
+    <div class="player-head"><span class="player-title" id="playerTitle"></span><button class="btn btn-ghost btn-sm btn-icon" id="playerClose" aria-label="Close player"></button></div>
+    <div class="player-stage" id="playerStage"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -627,7 +637,9 @@ function patch(j){
     rc.classList.toggle("tor",route==="tor"); rc.classList.toggle("proxy",route==="proxy"); rc.classList.toggle("direct",route==="direct");
   }
   const tc=q(".tool"); if(tc._v!==j.tool){ tc._v=j.tool; tc.textContent=j.tool||""; tc.style.display=j.tool?"":"none"; }
-  const qc=q(".meta-q"); if(qc._v!==j.quality){ qc._v=j.quality; qc.textContent=j.quality||""; qc.style.display=j.quality?"":"none"; }
+  // Format chip: show the full target, e.g. "MP4 · 1080p" / "MP3 · 320kbps".
+  const fmtTxt = (j.type && j.quality) ? (j.type.toUpperCase()+" · "+j.quality) : (j.quality || (j.type ? j.type.toUpperCase() : ""));
+  const qc=q(".meta-q"); if(qc._v!==fmtTxt){ qc._v=fmtTxt; qc.textContent=fmtTxt; qc.style.display=fmtTxt?"":"none"; }
   const sz=q(".meta-size"); const sizeTxt = j.size? fmtBytes(j.size) : ""; if(sz._v!==sizeTxt){ sz._v=sizeTxt; sz.textContent=sizeTxt; sz.style.display=sizeTxt?"":"none"; }
   const wt=q(".when"); const wtxt=when(j.completed||j.created); if(wt._v!==wtxt){ wt._v=wtxt; wt.textContent=wtxt; }
   // progress - a failed download has no bar at all, only the error line
@@ -654,6 +666,11 @@ function patch(j){
       b.title="Cancel this download"; b.onclick=()=>cancelJob(j.id); acts.appendChild(b);
     }
     if(j.status==="done"){
+      // Inline player for anything the browser can render (mp4/mp3/webm/…).
+      if(isPlayable(j)){
+        const p=document.createElement("button"); p.className="btn btn-ghost btn-sm"; p.innerHTML=icon("play")+(j.type==="mp3"?"Listen":"Watch");
+        p.title="Play it here — no download needed"; p.onclick=()=>openPlayer(j); acts.appendChild(p);
+      }
       const a=document.createElement("button"); a.className="btn btn-ghost btn-sm"; a.innerHTML=icon("download")+"Save";
       a.title="Save the file on this device";
       a.onclick=()=>saveFile(j, a); acts.appendChild(a);
@@ -724,6 +741,46 @@ function paintToolbar(){
 
 /* -------------------------------------------------------------- actions */
 function fileUrl(j){ return location.origin+"/api/jobs/"+j.id+"/file"; }
+function streamUrl(j){ return location.origin+"/api/jobs/"+j.id+"/stream"; }
+
+// Extensions the built-in <video>/<audio> player can usually render.
+const PLAYABLE = new Set(["mp4","m4v","webm","mov","mp3","m4a","ogg","opus","wav","flac","mkv"]);
+function isPlayable(j){
+  // Prefer the real extension from the saved path; fall back to the media type.
+  const m = /\.([a-z0-9]+)$/i.exec(j.file_path || j.url || "");
+  if(m && PLAYABLE.has(m[1].toLowerCase())) return true;
+  return j.type === "mp3" || j.type === "mp4";
+}
+
+function openPlayer(j){
+  const stage=$("#playerStage");
+  $("#playerTitle").textContent = j.title || j.url || "Player";
+  const isAudio = j.type === "mp3";
+  stage.innerHTML = "";
+  if(isAudio){
+    // For audio, show the cover art above the transport controls.
+    if(j.thumb){
+      const img=document.createElement("img"); img.className="cover"; img.src=j.thumb; img.alt="";
+      img.style.maxWidth="320px"; img.style.margin="26px auto 0"; img.style.borderRadius="12px";
+      img.onerror=()=>img.remove();
+      stage.appendChild(img);
+    }
+    const au=document.createElement("audio"); au.controls=true; au.autoplay=true; au.src=streamUrl(j);
+    stage.appendChild(au);
+  } else {
+    const vd=document.createElement("video"); vd.controls=true; vd.autoplay=true; vd.playsInline=true; vd.src=streamUrl(j);
+    if(j.thumb){ vd.poster=j.thumb; }
+    stage.appendChild(vd);
+  }
+  $("#player").hidden=false;
+  document.body.style.overflow="hidden";
+}
+function closePlayer(){
+  const stage=$("#playerStage");
+  $("#player").hidden=true;
+  stage.innerHTML="";           // stops playback
+  document.body.style.overflow="";
+}
 async function saveFile(j, btn){
   const url=fileUrl(j);
   // Check first: a file that was removed on the server must not look like a
@@ -793,6 +850,10 @@ function routeOverride(){ const v=$("#selRoute").value; return v==="auto"?undefi
 async function enqueue(itemsArr, silent){
   if(busy) return;
   busy=true; $("#goBtn").disabled=true; $("#goLabel").textContent="Starting…";
+  // Apply the "Include cover photo" choice to every item in one place
+  // (covers single, batch, playlist and retry alike).
+  const embed = $("#embedThumb").checked;
+  for(const it of itemsArr) it.embed_thumbnail = embed;
   try{
     if(itemsArr.length===1){
       const it=itemsArr[0];
@@ -871,49 +932,13 @@ function queuePlaylist(){
   toast("Playlist queued", chosen.length+" items");
 }
 
-/* -------------------------------------------------------------- cookies */
-async function checkCookies(){
+/* --------------------------------------------------------- version pill */
+async function loadVersion(){
   try{
-    const d=await (await fetch("/api/cookies")).json();
-    const chip=$("#cookieChip");
-    if(d.exists && d.has_session){ chip.textContent="session active"; chip.className="chip done"; }
-    else if(d.exists){ chip.textContent=d.lines+" lines"; chip.className="chip prog"; }
-    else { chip.textContent="none"; chip.className="chip error"; }
-  }catch{}
-}
-$("#cookieFile").addEventListener("change", async e=>{
-  const f=e.target.files[0]; if(!f) return;
-  const fd=new FormData(); fd.append("file",f);
-  try{
-    const r=await fetch("/api/upload-cookies",{method:"POST",body:fd});
-    const d=await r.json();
-    if(d.ok){ toast("Cookies uploaded", d.message, "ok"); checkCookies(); }
-    else toast("Upload failed", d.error||"", "err");
-  }catch{ toast("Upload failed","Network error","err"); }
-  e.target.value="";
-});
-
-/* ------------------------------------------------------------ about/ver */
-async function loadAbout(force){
-  const b=$("#aboutBody");
-  try{
-    const d=await (await fetch("/api/version"+(force?"?t="+Date.now():""))).json();
+    const d=await (await fetch("/api/version")).json();
     $("#verPill").textContent="v"+d.version;
-    const rows=[
-      ["Version", "v"+d.version+(d.latest? (d.update_available? " · "+d.latest+" available" : " · up to date") : "")],
-      ["Route", d.proxy_configured? ("proxy configured · mode: "+d.proxy_mode) : "direct only (no proxy configured)"],
-      ["JS runtime", d.js_runtime||"none (YouTube signatures may fail — install deno or node)"],
-      ["aria2c", d.aria2c? "available (fast direct downloads)" : "not installed (single-connection downloads)"],
-    ];
-    b.innerHTML='<div class="kv">'+rows.map(r=>"<b>"+esc(r[0])+"</b><span>"+esc(r[1])+"</span>").join("")+'</div>'+
-      '<div class="sec-note">'+icon("server")+' <span>Your history and every downloaded file stay on this server. Open this page on any other device (phone, laptop) and use <b>Save</b> or <b>Copy link</b> to get the same file again — the route badge shows whether it was fetched directly or via Tor.</span></div>'+
-      (d.update_available?'<div class="sec-note">'+icon("shield")+'<span>Update to <b>'+esc(d.latest)+'</b> on the server: <code>curl -fsSL …/install.sh | sudo bash -s -- --update</code></span></div><div><button class="btn btn-ghost btn-sm" id="copyUpd">'+icon("copy")+'Copy update command</button></div>':'')+
-      '<div><button class="btn btn-ghost btn-sm" id="recheck">'+icon("retry")+'Check again</button></div>';
-    const cp=$("#copyUpd"); if(cp) cp.onclick=()=>{ navigator.clipboard.writeText('curl -fsSL https://raw.githubusercontent.com/xyzyt010/yellod-installer/main/install.sh | sudo bash -s -- --update'); toast("Copied","Run it on the server (as root)","ok"); };
-    const rc=$("#recheck"); if(rc) rc.onclick=()=>loadAbout(true);
-  }catch{ b.textContent="Could not load server info."; }
+  }catch{ /* offline - leave as-is */ }
 }
-$("#verPill").addEventListener("click", ()=>{ const s=$("#aboutSec"); s.open=!s.open; if(s.open) loadAbout(false); s.scrollIntoView({block:"nearest"}); });
 
 /* ---------------------------------------------------------------- input */
 function applyQuality(){
@@ -939,6 +964,10 @@ function setTab(t){
 $("#selType").addEventListener("change", ()=>{ store.set("type",$("#selType").value); applyQuality(); });
 $("#selRoute").addEventListener("change", ()=>{ store.set("route",$("#selRoute").value); });
 $("#autoDl").addEventListener("change", ()=>{ store.set("autodl", $("#autoDl").checked?"1":"0"); });
+$("#embedThumb").addEventListener("change", ()=>{ store.set("embed", $("#embedThumb").checked?"1":"0"); });
+$("#playerClose").addEventListener("click", closePlayer);
+$("#player").addEventListener("click", e=>{ if(e.target===$("#player")) closePlayer(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#player").hidden) closePlayer(); });
 $("#url").addEventListener("input", ()=>{
   autoGrow(); syncGoLabel();
   clearTimeout(resolveTimer);
@@ -986,11 +1015,7 @@ async function start(){
   $("#logoMark").innerHTML=ICONS.download;
   $("#goIcon").innerHTML=ICONS.download;
   $("#clearIcon").innerHTML=ICONS.close;
-  $("#cookieIcon").innerHTML=ICONS.cookie;
-  $("#aboutIcon").innerHTML=ICONS.info;
-  $("#uploadIcon").innerHTML=ICONS.upload;
-  $("#cookieChev").innerHTML=ICONS.chevron;
-  $("#aboutChev").innerHTML=ICONS.chevron;
+  $("#playerClose").innerHTML=ICONS.close;
   $("#tabActiveIcon").innerHTML=ICONS.bolt;
   $("#tabHistoryIcon").innerHTML=ICONS.clock;
   $("#delSelIcon").innerHTML=ICONS.trash;
@@ -1002,7 +1027,8 @@ async function start(){
   $("#selType").value = store.get("type","mp3"); $("#selType").dispatchEvent(new Event("change"));
   const r=store.get("route","auto"); $("#selRoute").value=r;
   $("#autoDl").checked = store.get("autodl","1")==="1";
-  connect(); fetchJobs().then(()=>{ /* first layout done */ }); checkCookies(); loadAbout(false);
+  $("#embedThumb").checked = store.get("embed","1")==="1";
+  connect(); fetchJobs().then(()=>{ /* first layout done */ }); loadVersion();
   safety=setInterval(()=>{ if(items().some(j=>isActive(j.status))) fetchJobs(); }, 15000);
   window.addEventListener("online", ()=>connect());
   document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && ws && ws.readyState>1) connect(); });

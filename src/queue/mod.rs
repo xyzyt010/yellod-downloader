@@ -63,6 +63,9 @@ pub struct JobSpec {
     pub connection: Option<String>,
     pub title: Option<String>,
     pub thumbnail: Option<String>,
+    /// Embed the cover art/thumbnail into the file itself (mp3 album art,
+    /// mp4 cover frame). Off by default so plain downloads stay untouched.
+    pub embed_thumbnail: bool,
 }
 
 pub struct QueueManager {
@@ -396,6 +399,17 @@ impl QueueManager {
             cmd.arg("-f").arg(&fmt).arg("--merge-output-format").arg("mp4");
         }
 
+        // Cover art: when the user ticks "include cover photo", let yt-dlp
+        // fetch the thumbnail and embed it (mp3 album art / mp4 cover frame).
+        // ffmpeg handles the muxing, which is already required for mp3 anyway.
+        if spec.embed_thumbnail {
+            // yt-dlp downloads the thumbnail itself for embedding; no separate
+            // file is written to disk, so the "final file" picker is unaffected.
+            cmd.arg("--embed-thumbnail");
+            // Normalise webp/png thumbnails to jpg so every muxer accepts them.
+            cmd.arg("--convert-thumbnails").arg("jpg");
+        }
+
         cmd.arg(&spec.url);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -593,7 +607,20 @@ impl QueueManager {
             .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
             .unwrap_or_default();
         let mut new_files: Vec<String> = after.difference(&before).cloned().collect();
-        new_files.retain(|f| !f.ends_with(".part") && !f.ends_with(".ytdl"));
+        // Skip partials, downloader sidecars and any stray thumbnails/metadata
+        // so only the real media file is ever treated as the result.
+        new_files.retain(|f| {
+            let lower = f.to_lowercase();
+            !lower.ends_with(".part")
+                && !lower.ends_with(".ytdl")
+                && !lower.ends_with(".aria2")
+                && !lower.ends_with(".jpg")
+                && !lower.ends_with(".jpeg")
+                && !lower.ends_with(".png")
+                && !lower.ends_with(".webp")
+                && !lower.ends_with(".json")
+                && !lower.ends_with(".description")
+        });
         new_files.sort();
         let file_path = new_files.first().map(|f| out_dir.join(f).to_string_lossy().to_string());
 

@@ -75,6 +75,7 @@ async fn main() {
         .route("/api/jobs", get(api::handlers::list_jobs))
         .route("/api/jobs/{id}", get(api::handlers::get_job).delete(api::handlers::delete_job))
         .route("/api/jobs/{id}/file", get(api::handlers::get_job_file))
+        .route("/api/jobs/{id}/stream", get(api::handlers::stream_job_file))
         .route("/api/jobs/delete/batch", post(api::handlers::delete_jobs))
         .route("/api/jobs/delete/all", post(api::handlers::delete_all_jobs))
         .route("/api/upload-cookies", post(api::handlers::upload_cookies))

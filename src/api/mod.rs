@@ -50,6 +50,9 @@ pub struct DownloadRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub thumbnail: Option<String>,
+    /// Embed the cover art/thumbnail into the file (mp3 album art / mp4 cover).
+    #[serde(default)]
+    pub embed_thumbnail: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

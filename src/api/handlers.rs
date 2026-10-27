@@ -86,6 +86,7 @@ fn spec_from(req: &DownloadRequest) -> crate::queue::JobSpec {
         connection: req.connection.clone(),
         title: req.title.clone(),
         thumbnail: req.thumbnail.clone(),
+        embed_thumbnail: req.embed_thumbnail,
     }
 }
 
@@ -220,6 +221,121 @@ pub async fn get_job_file(
     }
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from_str(&metadata.len().to_string()).unwrap());
     headers.insert(header::HeaderName::from_static("x-content-type-options"), HeaderValue::from_static("nosniff"));
+    Ok(response)
+}
+
+/// Guess a browser-friendly content-type from the file extension so the
+/// inline <video>/<audio> player can render the file without a download.
+fn content_type_for(path: &str) -> &'static str {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default()
+        .as_str()
+    {
+        "mp4" | "m4v" | "mov" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "opus" => "audio/opus",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Inline media streaming for the built-in player. Unlike `/file` (which forces
+/// a download with `Content-Disposition: attachment`), this serves the file
+/// inline and honours HTTP Range requests so video/audio seeking works.
+pub async fn stream_job_file(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, (StatusCode, String)> {
+    let job = state.db.get_job(&id)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Job not found".to_string()))?;
+
+    if job.status != "done" {
+        return Err((StatusCode::CONFLICT, "This job did not finish successfully.".to_string()));
+    }
+    let path = job.file_path
+        .ok_or((StatusCode::NOT_FOUND, "No file is associated with this job.".to_string()))?;
+
+    let mut file = tokio::fs::File::open(&path).await
+        .map_err(|_| (StatusCode::NOT_FOUND, "The file no longer exists on the server.".to_string()))?;
+    let total = file.metadata().await
+        .map_err(|_| (StatusCode::NOT_FOUND, "The file no longer exists on the server.".to_string()))?
+        .len();
+
+    let filename = std::path::Path::new(&path)
+        .file_name().and_then(|n| n.to_str()).unwrap_or("media")
+        .replace(['"', '\r', '\n'], "_");
+    let ctype = content_type_for(&path);
+
+    // Parse a single-range `Range: bytes=start-end` header (the only form the
+    // browser media element sends). Anything else -> serve the whole file.
+    let mut start = 0u64;
+    let mut end = total.saturating_sub(1);
+    let mut partial = false;
+    if let Some(rv) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+        if let Some(spec) = rv.trim().strip_prefix("bytes=") {
+            let spec = spec.split(',').next().unwrap_or("").trim();
+            let (s, e) = spec.split_once('-').unwrap_or((spec, ""));
+            let ok = if s.is_empty() {
+                // suffix form: last N bytes
+                if let Ok(n) = e.parse::<u64>() {
+                    let n = n.min(total);
+                    start = total.saturating_sub(n);
+                    end = total.saturating_sub(1);
+                    partial = total > 0;
+                    true
+                } else { false }
+            } else if let Ok(sv) = s.parse::<u64>() {
+                start = sv.min(total.saturating_sub(1));
+                if !e.is_empty() {
+                    end = e.parse::<u64>().map(|v| v.min(total.saturating_sub(1))).unwrap_or(total.saturating_sub(1));
+                } else {
+                    end = total.saturating_sub(1);
+                }
+                partial = true;
+                true
+            } else { false };
+            if !ok {
+                start = 0;
+                end = total.saturating_sub(1);
+                partial = false;
+            }
+        }
+    }
+
+    let len = end.saturating_sub(start).saturating_add(1);
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    file.seek(std::io::SeekFrom::Start(start)).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Seek failed".to_string()))?;
+    let limited = file.take(len);
+
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(limited));
+    let mut response = Response::new(body);
+    if partial {
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+    }
+    let h = response.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    // Inline (not attachment) so the browser plays it instead of downloading.
+    if let Ok(value) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", filename)) {
+        h.insert(header::CONTENT_DISPOSITION, value);
+    }
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from_str(&len.to_string()).unwrap());
+    if partial {
+        if let Ok(v) = HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total)) {
+            h.insert(header::CONTENT_RANGE, v);
+        }
+    }
     Ok(response)
 }
 
