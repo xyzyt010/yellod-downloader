@@ -40,14 +40,22 @@ async fn main() {
         if cfg.proxy_url.is_empty() { None } else { Some(cfg.proxy_url.as_str()) },
         cfg.proxy_mode
     );
+    tracing::info!(
+        "routing: youtube-clients={}, tor-control={}",
+        if cfg.yt_clients.trim().is_empty() { "yt-dlp default".to_string() } else { cfg.yt_clients.clone() },
+        if cfg.tor_control_socket.is_empty() { "off".to_string() } else { cfg.tor_control_socket.clone() }
+    );
+    let tor_control = net::TorControl::from_config(&cfg);
     let resolver = Arc::new(resolver::Resolver::new(
         cfg.ytdlp_binary_path.clone(),
         cfg.ytdlp_force_ipv4,
+        cfg.yt_clients.clone(),
         cfg.proxy_url.clone(),
         cfg.proxy_mode.clone(),
         cfg.cookies_path.clone(),
         routes.clone(),
         js_runtime,
+        tor_control.clone(),
     ));
     let config = Arc::new(cfg.clone());
 
@@ -58,6 +66,7 @@ async fn main() {
         ws_hub.clone(),
         config.clone(),
         routes.clone(),
+        tor_control.clone(),
     ));
 
     let state = Arc::new(api::handlers::AppState {

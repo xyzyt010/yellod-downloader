@@ -34,6 +34,11 @@ pub struct AppConfig {
     pub ytdlp_binary_path: String,
     #[serde(default)]
     pub ytdlp_force_ipv4: bool,
+    /// Comma-separated YouTube player clients for yt-dlp
+    /// (`youtube:player_client=…`). The default web clients get bot-walled
+    /// from server IPs; TV/Android clients keep working. Empty = yt-dlp default.
+    #[serde(default = "default_yt_clients")]
+    pub yt_clients: String,
     #[serde(default)]
     pub auth_enabled: bool,
     #[serde(default)]
@@ -42,6 +47,15 @@ pub struct AppConfig {
     pub proxy_url: String,
     #[serde(default = "default_proxy_mode")]
     pub proxy_mode: String,
+    /// Tor control socket (for `SIGNAL NEWNYM` circuit rotation when an exit
+    /// IP gets bot-walled). Empty = rotation disabled.
+    #[serde(default = "default_tor_control_socket")]
+    pub tor_control_socket: String,
+    /// Tor control auth: password wins over the cookie file when set.
+    #[serde(default = "default_tor_control_cookie")]
+    pub tor_control_cookie: String,
+    #[serde(default = "default_tor_control_password")]
+    pub tor_control_password: String,
     #[serde(default = "default_cookies_path")]
     pub cookies_path: String,
     #[serde(default = "default_db_path")]
@@ -67,10 +81,14 @@ impl Default for AppConfig {
             aria2_split: 16,
             ytdlp_binary_path: default_ytdlp_path(),
             ytdlp_force_ipv4: true,
+            yt_clients: default_yt_clients(),
             auth_enabled: false,
             auth_shared_secret: String::new(),
             proxy_url: default_proxy_url(),
             proxy_mode: default_proxy_mode(),
+            tor_control_socket: default_tor_control_socket(),
+            tor_control_cookie: default_tor_control_cookie(),
+            tor_control_password: default_tor_control_password(),
             cookies_path: default_cookies_path(),
             db_path: default_db_path(),
         }
@@ -103,6 +121,44 @@ fn default_ytdlp_path() -> String {
 
 fn default_cookies_path() -> String {
     std::env::var("DOWNLOADER_COOKIES_PATH").unwrap_or_else(|_| "./cookies.txt".into())
+}
+
+/// Player clients yt-dlp uses for YouTube. Verified working from datacenter
+/// IPs (via Tor): tv_simply exposes the full DASH manifest up to 1080p60,
+/// android/android_vr as fallbacks. Override with DOWNLOADER_YT_CLIENTS
+/// (set empty to fall back to yt-dlp's own defaults).
+fn default_yt_clients() -> String {
+    std::env::var("DOWNLOADER_YT_CLIENTS")
+        .unwrap_or_else(|_| "tv_simply,android_vr,android".into())
+}
+
+/// Tor control socket used to rotate circuits (`SIGNAL NEWNYM`) when the
+/// current exit IP is bot-walled. Auto-detects the standard Debian path;
+/// set DOWNLOADER_TOR_CONTROL_SOCKET="" to disable rotation entirely.
+fn default_tor_control_socket() -> String {
+    if let Ok(v) = std::env::var("DOWNLOADER_TOR_CONTROL_SOCKET") {
+        return v;
+    }
+    if std::path::Path::new("/run/tor/control").exists() {
+        "/run/tor/control".into()
+    } else {
+        String::new()
+    }
+}
+
+fn default_tor_control_cookie() -> String {
+    if let Ok(v) = std::env::var("DOWNLOADER_TOR_CONTROL_COOKIE") {
+        return v;
+    }
+    if std::path::Path::new("/run/tor/control.authcookie").exists() {
+        "/run/tor/control.authcookie".into()
+    } else {
+        String::new()
+    }
+}
+
+fn default_tor_control_password() -> String {
+    std::env::var("DOWNLOADER_TOR_CONTROL_PASSWORD").unwrap_or_default()
 }
 
 fn default_db_path() -> String {

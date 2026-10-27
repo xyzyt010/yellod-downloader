@@ -17,28 +17,34 @@ pub struct Resolver {
     ttl: Duration,
     ytdlp_binary_path: String,
     ytdlp_force_ipv4: bool,
+    yt_clients: String,
     proxy_url: String,
     proxy_mode: String,
     cookies_path: String,
     routes: Arc<RouteCache>,
     js_runtime: Option<&'static str>,
+    /// Tor control access for circuit rotation (see [`net::TorControl`]).
+    tor: net::TorControl,
 }
 
 impl Resolver {
     pub fn new(
         ytdlp_binary_path: String,
         ytdlp_force_ipv4: bool,
+        yt_clients: String,
         proxy_url: String,
         proxy_mode: String,
         cookies_path: String,
         routes: Arc<RouteCache>,
         js_runtime: Option<&'static str>,
+        tor: net::TorControl,
     ) -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
             ttl: Duration::from_secs(600),
             ytdlp_binary_path,
             ytdlp_force_ipv4,
+            yt_clients: yt_clients.trim().to_string(),
             proxy_url: proxy_url.trim().to_string(),
             proxy_mode: {
                 let m = proxy_mode.trim().to_lowercase();
@@ -47,6 +53,7 @@ impl Resolver {
             cookies_path,
             routes,
             js_runtime,
+            tor,
         }
     }
 
@@ -120,14 +127,31 @@ impl Resolver {
         let host = net::host_of(url);
         let proxy_available = !self.proxy_url.is_empty();
 
-        let first_proxy = self.routes.use_proxy(&host, &self.proxy_mode, None, proxy_available);
+        let mut first_proxy =
+            self.routes.use_proxy(&host, &self.proxy_mode, None, proxy_available);
+        // Same YouTube-first-through-proxy seed as the download path: avoids
+        // a doomed direct extraction on every cold start.
+        if !first_proxy
+            && proxy_available
+            && self.proxy_mode == "auto"
+            && net::is_youtube(url)
+            && self.routes.lookup(&host) != Some(true)
+        {
+            first_proxy = true;
+        }
         let mut attempts = vec![first_proxy];
         if self.proxy_mode == "auto" && proxy_available {
             attempts.push(!first_proxy);
         }
 
+        // Fresh-Tor-circuit retries when a flagged exit blocks everything
+        // (mirrors the download path in queue::process_ytdlp).
+        const MAX_CIRCUIT_ROTATIONS: usize = 2;
+        let mut rotations = 0usize;
+
         let mut last_error = String::new();
-        for (idx, use_proxy) in attempts.iter().copied().enumerate() {
+        let mut idx = 0usize;
+        while let Some(&use_proxy) = attempts.get(idx) {
             match self.resolve_ytdlp_once(url, use_proxy).await {
                 Ok(response) => {
                     self.routes.mark(&host, !use_proxy);
@@ -137,12 +161,27 @@ impl Resolver {
                     if !use_proxy && net::looks_like_route_error(&e) {
                         self.routes.mark(&host, false);
                     }
+                    if use_proxy
+                        && self.tor.enabled()
+                        && net::looks_like_route_error(&e)
+                        && rotations < MAX_CIRCUIT_ROTATIONS
+                    {
+                        rotations += 1;
+                        tracing::info!("resolve: route failure via proxy, requesting a new Tor circuit");
+                        if let Err(ce) = self.tor.newnym().await {
+                            tracing::warn!("resolve: tor circuit rotation failed: {}", ce);
+                        }
+                        // Fresh-circuit retry next; direct stays last resort.
+                        attempts.insert(idx + 1, true);
+                    }
                     last_error = e;
                     if idx + 1 < attempts.len() {
-                        tracing::info!("resolve: direct attempt failed, retrying via proxy");
+                        let next = if attempts[idx + 1] { "proxy" } else { "direct" };
+                        tracing::info!("resolve: attempt failed, retrying via {}", next);
                     }
                 }
             }
+            idx += 1;
         }
         Err(last_error)
     }
@@ -150,6 +189,8 @@ impl Resolver {
     async fn resolve_ytdlp_once(&self, url: &str, use_proxy: bool) -> Result<ResolveResponse, String> {
         let mut cmd = tokio::process::Command::new(self.ytdlp_binary());
         self.apply_ytdlp_base(&mut cmd, use_proxy);
+        // YouTube resolves need the same bot-wall-proof clients as downloads.
+        net::apply_yt_clients(&mut cmd, url, &self.yt_clients);
 
         // A watch URL that names a specific video resolves just that video
         // (matching download behaviour). Playlists/collections are listed

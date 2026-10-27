@@ -84,6 +84,8 @@ pub struct QueueManager {
     pub aria2c: bool,
     pub proxy_url: String,
     pub proxy_mode: String,
+    /// Tor control access for circuit rotation when an exit is bot-walled.
+    tor: net::TorControl,
 }
 
 impl QueueManager {
@@ -94,6 +96,7 @@ impl QueueManager {
         ws_hub: Arc<WsHub>,
         config: Arc<AppConfig>,
         route_cache: Arc<RouteCache>,
+        tor: net::TorControl,
     ) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
         let proxy_url = config.proxy_url.trim().to_string();
@@ -113,6 +116,7 @@ impl QueueManager {
             aria2c: net::have_aria2c(),
             proxy_url,
             proxy_mode: if proxy_mode.is_empty() { "never".into() } else { proxy_mode },
+            tor,
         }
     }
 
@@ -239,20 +243,41 @@ impl QueueManager {
         let proxy_available = !self.proxy_url.is_empty();
         let override_mode = spec.connection.as_deref();
 
-        let first_proxy = self.route_cache.use_proxy(&host, &self.proxy_mode, override_mode, proxy_available);
-        let mut attempts: Vec<bool> = vec![first_proxy];
-        // In auto mode, transparently retry the other way once (direct → Tor
-        // when a site blocks this server, Tor → direct when the proxy fails).
         let effective_mode = match override_mode {
             Some(o) if !o.is_empty() && o != "auto" => o.to_string(),
             _ => self.proxy_mode.clone(),
         };
+        let mut first_proxy =
+            self.route_cache.use_proxy(&host, &self.proxy_mode, override_mode, proxy_available);
+        // YouTube bot-walls datacenter IPs on direct attempts and flags many
+        // Tor exits, so unless direct is *known* to work for this host, start
+        // through the proxy instead of burning a doomed first attempt. The
+        // auto fallback below still covers both directions.
+        if !first_proxy
+            && proxy_available
+            && effective_mode == "auto"
+            && net::is_youtube(&spec.url)
+            && self.route_cache.lookup(&host) != Some(true)
+        {
+            first_proxy = true;
+        }
+        let mut attempts: Vec<bool> = vec![first_proxy];
+        // In auto mode, transparently retry the other way once (direct → Tor
+        // when a site blocks this server, Tor → direct when the proxy fails).
         if effective_mode == "auto" && proxy_available {
             attempts.push(!first_proxy);
         }
 
+        // Extra proxied attempts with a fresh Tor circuit. A bot-walled exit
+        // IP fails for *every* player client, so a retry only helps if the
+        // exit itself changes (Tor ignores NEWNYM more often than ~10s, the
+        // cooldown is handled inside TorControl).
+        const MAX_CIRCUIT_ROTATIONS: usize = 2;
+        let mut rotations = 0usize;
+
         let mut last_error = String::new();
-        for (idx, use_proxy) in attempts.iter().copied().enumerate() {
+        let mut idx = 0usize;
+        while let Some(&use_proxy) = attempts.get(idx) {
             if self.cancelled.contains(id) {
                 return Err("cancelled".into());
             }
@@ -294,6 +319,26 @@ impl QueueManager {
                     if !use_proxy && net::looks_like_route_error(&e) {
                         self.route_cache.mark(&host, false);
                     }
+                    // Route failure *through* the proxy: this exit IP is
+                    // likely flagged - swap the circuit and queue one more
+                    // proxied attempt (bounded, so a dead proxy can't loop).
+                    if use_proxy
+                        && self.tor.enabled()
+                        && net::looks_like_route_error(&e)
+                        && rotations < MAX_CIRCUIT_ROTATIONS
+                    {
+                        rotations += 1;
+                        tracing::info!(
+                            "job {}: route failure via proxy, requesting a new Tor circuit",
+                            id
+                        );
+                        if let Err(ce) = self.tor.newnym().await {
+                            tracing::warn!("job {}: tor circuit rotation failed: {}", id, ce);
+                        }
+                        // Retry the proxy immediately (fresh circuit); the
+                        // direct attempt stays as the last resort.
+                        attempts.insert(idx + 1, true);
+                    }
                     last_error = e;
                     if idx + 1 < attempts.len() {
                         let next = if attempts[idx + 1] { "the proxy" } else { "a direct connection" };
@@ -301,6 +346,7 @@ impl QueueManager {
                     }
                 }
             }
+            idx += 1;
         }
         Err(last_error)
     }
@@ -380,6 +426,11 @@ impl QueueManager {
             cmd.arg("--cookies").arg(&cookies_path);
         }
 
+        // YouTube: pick player clients that survive the "confirm you're not
+        // a bot" wall (the default web clients fail from nearly any server
+        // IP, direct or via Tor). See net::apply_yt_clients.
+        net::apply_yt_clients(&mut cmd, &spec.url, &self.config.yt_clients);
+
         if spec.media_type == "mp3" {
             // Only fetch the audio stream - never download video just to throw it away.
             cmd.arg("-f").arg("ba/b");
@@ -391,10 +442,17 @@ impl QueueManager {
             }
         } else {
             let fmt = if spec.quality == "best" {
-                "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".to_string()
+                // H.264 first: it plays everywhere (built-in player, TVs,
+                // phones, editors); AV1/VP9 only as a fallback.
+                "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".to_string()
             } else {
                 let h = spec.quality.trim_end_matches('p');
-                format!("bv*[height<={h}][ext=mp4]+ba[ext=m4a]/bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b", h = h)
+                format!(
+                    "bv*[height<={h}][ext=mp4][vcodec^=avc1]+ba[ext=m4a]\
+                     /bv*[height<={h}][ext=mp4]+ba[ext=m4a]\
+                     /bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b",
+                    h = h
+                )
             };
             cmd.arg("-f").arg(&fmt).arg("--merge-output-format").arg("mp4");
         }
@@ -801,6 +859,7 @@ impl QueueManager {
             aria2c: self.aria2c,
             proxy_url: self.proxy_url.clone(),
             proxy_mode: self.proxy_mode.clone(),
+            tor: self.tor.clone(),
         }
     }
 }
