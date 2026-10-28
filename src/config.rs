@@ -56,6 +56,10 @@ pub struct AppConfig {
     pub tor_control_cookie: String,
     #[serde(default = "default_tor_control_password")]
     pub tor_control_password: String,
+    /// Fallback chain of standalone CLI downloaders, tried in this order
+    /// when yt-dlp cannot fetch the media. Comma-separated; empty disables.
+    #[serde(default = "default_cli_downloaders")]
+    pub cli_downloaders: String,
     #[serde(default = "default_cookies_path")]
     pub cookies_path: String,
     #[serde(default = "default_db_path")]
@@ -89,6 +93,7 @@ impl Default for AppConfig {
             tor_control_socket: default_tor_control_socket(),
             tor_control_cookie: default_tor_control_cookie(),
             tor_control_password: default_tor_control_password(),
+            cli_downloaders: default_cli_downloaders(),
             cookies_path: default_cookies_path(),
             db_path: default_db_path(),
         }
@@ -130,6 +135,20 @@ fn default_cookies_path() -> String {
 fn default_yt_clients() -> String {
     std::env::var("DOWNLOADER_YT_CLIENTS")
         .unwrap_or_else(|_| "tv_simply,android_vr,android".into())
+}
+
+/// Extra CLI downloaders tried after yt-dlp itself fails, in order.
+/// Comma-separated; each is probed at startup and skipped when not installed.
+/// An empty value disables the CLI fallback chain.
+///
+/// - `N_m3u8DL-RE` is an HLS/DASH specialist with real SOCKS5 (Tor) support -
+///   the dependable one.
+/// - `lux` / `you-get` are complete alternative engines, but only work without
+///   a proxy (neither speaks SOCKS5) and both are unreliable on current
+///   YouTube, so they are opt-in (set this variable to add them back).
+fn default_cli_downloaders() -> String {
+    std::env::var("DOWNLOADER_CLI_DOWNLOADERS")
+        .unwrap_or_else(|_| "N_m3u8DL-RE".into())
 }
 
 /// Tor control socket used to rotate circuits (`SIGNAL NEWNYM`) when the

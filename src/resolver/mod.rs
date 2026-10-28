@@ -208,7 +208,12 @@ impl Resolver {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("yt-dlp error: {}", stderr));
+            // Same readable-message treatment as the download path: the
+            // raw traceback would otherwise reach the UI verbatim.
+            return Err(format!(
+                "yt-dlp error: {}",
+                crate::queue::cli_failure_message(&stderr, output.status)
+            ));
         }
 
         let info: serde_json::Value = serde_json::from_slice(&output.stdout)

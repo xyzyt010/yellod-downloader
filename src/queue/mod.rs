@@ -86,6 +86,8 @@ pub struct QueueManager {
     pub proxy_mode: String,
     /// Tor control access for circuit rotation when an exit is bot-walled.
     tor: net::TorControl,
+    /// Downloader binaries found on this machine (ffmpeg/aria2/CLI engines).
+    downloaders: crate::clidownload::Downloaders,
 }
 
 impl QueueManager {
@@ -117,6 +119,7 @@ impl QueueManager {
             proxy_url,
             proxy_mode: if proxy_mode.is_empty() { "never".into() } else { proxy_mode },
             tor,
+            downloaders: crate::clidownload::Downloaders::detect(),
         }
     }
 
@@ -276,6 +279,7 @@ impl QueueManager {
         let mut rotations = 0usize;
 
         let mut last_error = String::new();
+        let mut last_proxy = attempts.first().copied().unwrap_or(false);
         let mut idx = 0usize;
         while let Some(&use_proxy) = attempts.get(idx) {
             if self.cancelled.contains(id) {
@@ -340,6 +344,7 @@ impl QueueManager {
                         attempts.insert(idx + 1, true);
                     }
                     last_error = e;
+                    last_proxy = use_proxy;
                     if idx + 1 < attempts.len() {
                         let next = if attempts[idx + 1] { "the proxy" } else { "a direct connection" };
                         tracing::info!("job {}: attempt failed, retrying via {}", id, next);
@@ -348,6 +353,42 @@ impl QueueManager {
             }
             idx += 1;
         }
+
+        // ---- standalone CLI fallback (ffmpeg/aria2 engines, N_m3u8DL-RE,
+        // lux, you-get) ----------------------------------------------------
+        // yt-dlp failed on every route/attempt. Give the standalone engines
+        // a chance before declaring the job dead: N_m3u8DL-RE handles
+        // HLS/DASH manifests that yt-dlp's downloader chokes on and works
+        // through Tor; lux/you-get are complete alternative engines.
+        if !self.config.cli_downloaders.trim().is_empty() {
+            let out_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
+            let route = if last_proxy {
+                crate::clidownload::Route::Proxy
+            } else {
+                crate::clidownload::Route::Direct
+            };
+            tracing::info!(
+                "job {}: yt-dlp failed on every route, trying CLI downloaders (route {:?})",
+                id,
+                route
+            );
+            match self
+                .downloaders
+                .run_fallbacks(&self.config.cli_downloaders, &spec.url, &out_dir, route, &self.proxy_url)
+                .await
+            {
+                Ok(path) => {
+                    let _ = self.db.set_job_route(id, net::route_label(route == crate::clidownload::Route::Proxy && !self.proxy_url.is_empty(), &self.proxy_url));
+                    self.db.update_job_status(id, "done", 100.0, Some(&path), None, None).ok();
+                    return Ok(path);
+                }
+                Err(e) => {
+                    tracing::info!("job {}: CLI downloaders also failed: {}", id, e);
+                    // Keep yt-dlp's (more specific) message as the user error.
+                }
+            }
+        }
+
         Err(last_error)
     }
 
@@ -370,7 +411,9 @@ impl QueueManager {
         id: &str,
         spec: &JobSpec,
         use_proxy: bool,
-        use_aria2c: bool,
+        // Kept for the caller's rate-limit retry logic (aria2c splits, so it
+        // trips rate limits that a native downloader does not).
+        _use_aria2c: bool,
     ) -> Result<String, String> {
         let binary = if self.config.ytdlp_binary_path.is_empty() { "yt-dlp" } else { &self.config.ytdlp_binary_path };
         let out_dir = std::path::PathBuf::from(&self.config.output_dir).join(id);
@@ -389,7 +432,12 @@ impl QueueManager {
             // transfer starts. This is what makes a real percentage possible
             // even when the downloader itself reports no progress.
             .arg("--print")
-            .arg("before_dl:DLSIZE|%(filesize)s|%(filesize_approx)s")
+            // One comma-separated template: several --print fields arrive
+            // joined on a single line (see the parser below). Cover art of
+            // the media itself is saved on the job when it was queued
+            // without metadata (covered pastes, playlists, API calls),
+            // so history shows the photo.
+            .arg("before_dl:DLSIZE|%(filesize)s|%(filesize_approx)s,before_dl:THUMB|%(thumbnail)s")
             .arg("--progress-template")
             .arg("download:DLP|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s")
             .arg("--socket-timeout").arg("20")
@@ -405,18 +453,16 @@ impl QueueManager {
             cmd.arg("-4");
         }
 
+        // Per-route downloader strategy: aria2c for direct http (multi
+        // connection, resume), ffmpeg for HLS/DASH manifests, and yt-dlp's
+        // own downloader through the proxy because aria2c has no SOCKS.
+        let route = if use_proxy { crate::clidownload::Route::Proxy } else { crate::clidownload::Route::Direct };
+        for a in self.downloaders.ytdlp_args(route, &self.proxy_url) {
+            cmd.arg(a);
+        }
         if use_proxy {
-            // SOCKS proxies (Tor) are only supported by yt-dlp's native
-            // downloader, so no external downloader here. A few parallel
-            // fragments still help on sites that use DASH/HLS.
             cmd.arg("--proxy").arg(&self.proxy_url);
             cmd.arg("--concurrent-fragments").arg("4");
-        } else if use_aria2c && self.aria2c {
-            // Direct connection: aria2c saturates single-file downloads with
-            // multiple connections - much faster where it is available.
-            cmd.arg("--external-downloader").arg("aria2c")
-                .arg("--external-downloader-args").arg("aria2c:-x 8 -s 8 -k 1M --max-tries=5 --retry-wait=2")
-                .arg("--concurrent-fragments").arg("8");
         } else {
             cmd.arg("--concurrent-fragments").arg("8");
         }
@@ -436,7 +482,14 @@ impl QueueManager {
             cmd.arg("-f").arg("ba/b");
             cmd.arg("-x").arg("--audio-format").arg("mp3");
             if let Some(q) = spec.quality.strip_suffix("kbps") {
-                cmd.arg("--audio-quality").arg(format!("{}K", q));
+                // Accept only "<digits>kbps"; anything else ("360p", a
+                // reused job's odd value, an API caller's garbage) is
+                // treated as "best" so yt-dlp never gets an unparsable one.
+                if !q.is_empty() && q.chars().all(|c| c.is_ascii_digit()) {
+                    cmd.arg("--audio-quality").arg(format!("{}K", q));
+                } else {
+                    cmd.arg("--audio-quality").arg("0");
+                }
             } else {
                 cmd.arg("--audio-quality").arg("0");
             }
@@ -446,7 +499,16 @@ impl QueueManager {
                 // phones, editors); AV1/VP9 only as a fallback.
                 "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".to_string()
             } else {
-                let h = spec.quality.trim_end_matches('p');
+                // Only a plain "<digits>p" becomes a height selector; any
+                // other value (odd quality strings from reused jobs or an
+                // API caller) falls back to 1080p instead of producing an
+                // unparsable yt-dlp filter.
+                let h = spec
+                    .quality
+                    .strip_suffix('p')
+                    .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or("1080")
+                    .to_string();
                 format!(
                     "bv*[height<={h}][ext=mp4][vcodec^=avc1]+ba[ext=m4a]\
                      /bv*[height<={h}][ext=mp4]+ba[ext=m4a]\
@@ -594,13 +656,29 @@ impl QueueManager {
                         }
                         let _ = eta;
                     }
-                } else if let Some(rest) = line.strip_prefix("DLSIZE|") {
-                    // Expected size of the selected format(s) - the total
-                    // for the percentage (summed when several formats are
-                    // downloaded one after the other).
-                    let size = parse_expected_size(rest);
-                    if size > 0 {
-                        hint.total.fetch_add(size, Ordering::Relaxed);
+                } else if line.contains("before_dl:") || line.starts_with("DLSIZE|") {
+                    // yt-dlp prints the combined template on one line, with
+                    // the later fields prefixed by "before_dl:" - split on
+                    // that marker (a bare comma would be wrong: URLs may
+                    // contain commas).
+                    for seg in line.split("before_dl:") {
+                        let seg = seg.trim_start_matches(',').trim();
+                        if let Some(rest) = seg.strip_prefix("DLSIZE|") {
+                            // Expected size of the selected format(s) - the
+                            // total for the percentage (summed when several
+                            // formats are downloaded one after the other).
+                            let size = parse_expected_size(rest);
+                            if size > 0 {
+                                hint.total.fetch_add(size, Ordering::Relaxed);
+                            }
+                        } else if let Some(rest) = seg.strip_prefix("THUMB|") {
+                            // Cover photo - stored on the job when it was
+                            // queued without one (multi-link pastes,
+                            // playlists, API calls) so history shows it.
+                            if rest.starts_with("http") {
+                                let _ = self.db.set_thumbnail_if_empty(id, rest.trim());
+                            }
+                        }
                     }
                 } else if is_postprocessing_line(&line) {
                     // Merging / converting: the transfer is done, ffmpeg is
@@ -643,21 +721,7 @@ impl QueueManager {
 
         if !status.success() {
             let _ = std::fs::remove_dir_all(&out_dir);
-            let tail = stderr_text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .rev()
-                .take(8)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(if tail.is_empty() {
-                format!("yt-dlp exited with {}", status)
-            } else {
-                tail
-            });
+            return Err(cli_failure_message(&stderr_text, status));
         }
 
         // Keep only the final media file (no partials, no sidecars).
@@ -860,6 +924,7 @@ impl QueueManager {
             proxy_url: self.proxy_url.clone(),
             proxy_mode: self.proxy_mode.clone(),
             tor: self.tor.clone(),
+            downloaders: crate::clidownload::Downloaders::detect(),
         }
     }
 }
@@ -941,6 +1006,76 @@ fn is_postprocessing_line(line: &str) -> bool {
         "[FixupM3u8]",
     ];
     MARKERS.iter().any(|m| line.starts_with(m))
+}
+
+/// Turn a failed yt-dlp run into one message a user can actually read.
+///
+/// yt-dlp prints its reason on an "ERROR: ..." line, but Python often prints
+/// a long traceback after it; the old code showed the traceback's tail, which
+/// looked like the error itself. Prefer the "ERROR:" line, then the last
+/// meaningful non-traceback line, and only then the exit status.
+pub(crate) fn cli_failure_message(
+    stderr_text: &str,
+    status: std::process::ExitStatus,
+) -> String {
+    let lines: Vec<&str> = stderr_text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+
+    let pick = |needle: Option<&str>| -> Option<String> {
+        lines
+            .iter()
+            .rev()
+            .find(|l| match needle {
+                Some(n) => l.contains(n),
+                None => {
+                    // Skip traceback / progress noise - what is left is the
+                    // human-readable reason.
+                    let t = l.trim_start();
+                    !t.starts_with("File \"")
+                        && !t.starts_with("Traceback")
+                        && !t.starts_with("^")
+                        && !t.starts_with("[download]")
+                        && !t.starts_with("During handling")
+                        && !t.starts_with("The above exception")
+                }
+            })
+            .map(|l| {
+                // yt-dlp prefixes its own messages: "ERROR: [youtube] ID: ...".
+                let t = l.trim_start();
+                let msg = t.strip_prefix("ERROR:").unwrap_or(t).trim();
+                // Drop the bracketed extractor name and the id that follows.
+                let rest = msg.trim_start_matches(|c| c != ']').trim_start_matches(']');
+                let mut msg = rest.trim().to_string();
+                // ... then the "ID: " part is often noise too ("jNQXAC9IVRw: ").
+                if let Some(colon) = msg.find(": ") {
+                    let head = &msg[..colon];
+                    let wordish = !head.contains(' ') && head.len() <= 20;
+                    if wordish {
+                        msg = msg[colon + 2..].trim().to_string();
+                    }
+                }
+                msg
+            })
+    };
+
+    let message = pick(Some("ERROR:"))
+        .or_else(|| pick(None))
+        .unwrap_or_else(|| format!("yt-dlp exited with {}", status));
+
+    // One or two sentences, never a wall of text; the full log stays on the
+    // server (journalctl).
+    let mut message = message.replace('\n', " · ");
+    if message.chars().count() > 400 {
+        message = message.chars().take(400).collect();
+    }
+    if message.is_empty() {
+        format!("yt-dlp exited with {}", status)
+    } else {
+        message
+    }
 }
 
 /// Bytes really written in the job folder - that is how much has been

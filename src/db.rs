@@ -164,6 +164,18 @@ impl Database {
         Ok(())
     }
 
+    /// Persist the media's thumbnail (YouTube cover art) when the job was
+    /// queued without one - covered pastes / playlists / direct API calls -
+    /// so history shows the cover photo. Never overwrites a real one.
+    pub fn set_thumbnail_if_empty(&self, id: &str, thumbnail: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE jobs SET thumbnail_url=?1 WHERE id=?2 AND (thumbnail_url IS NULL OR thumbnail_url='')",
+            params![thumbnail, id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_job(&self, id: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM jobs WHERE id=?1", params![id])?;

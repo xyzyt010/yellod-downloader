@@ -120,7 +120,7 @@ pub async fn version(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
     let current = env!("CARGO_PKG_VERSION");
     let latest = latest_release("xyzyt010/yellod-downloader").await;
     let update_available = match latest.as_deref() {
-        Some(tag) => normalize_tag(tag) != current,
+        Some(tag) => is_newer(tag, current),
         None => false,
     };
     Json(serde_json::json!({
@@ -137,6 +137,30 @@ pub async fn version(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
 
 fn normalize_tag(tag: &str) -> &str {
     tag.trim().trim_start_matches('v')
+}
+
+/// True when `latest` is a *newer* release than the running `current`.
+///
+/// The GitHub lookup is cached for an hour, so right after a deploy the
+/// cache can still hold the previous tag - comparing with "!=" would then
+/// report a bogus "update available". Only a genuinely newer tag counts.
+fn is_newer(latest: &str, current: &str) -> bool {
+    fn parts(tag: &str) -> Vec<u64> {
+        normalize_tag(tag)
+            .split(['.', '-'])
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+    let l = parts(latest);
+    let c = parts(current);
+    for i in 0..l.len().max(c.len()) {
+        let lv = l.get(i).copied().unwrap_or(0);
+        let cv = c.get(i).copied().unwrap_or(0);
+        if lv != cv {
+            return lv > cv;
+        }
+    }
+    false
 }
 
 /// GitHub "latest release" lookup, cached for an hour (and quiet on failure).

@@ -230,6 +230,12 @@ textarea#url::placeholder{color:var(--dim)}
 }
 .job .thumb img{width:100%;height:100%;object-fit:cover;transition:transform .35s var(--ease)}
 .job:hover .thumb img{transform:scale(1.06)}
+.job .thumb.clickable{cursor:pointer;position:relative}
+.job .thumb.clickable:hover{border-color:rgba(255,138,76,.45)}
+.job .thumb .thumb-play{position:absolute;inset:0;display:grid;place-items:center;background:rgba(6,6,9,.45);
+  opacity:0;transition:opacity .2s var(--ease);color:#fff}
+.job .thumb .thumb-play .ico{font-size:26px;width:26px;height:26px}
+.job .thumb.clickable:hover .thumb-play,.job .thumb.clickable:focus-visible .thumb-play{opacity:1}
 .job .body{min-width:0}
 .job .r1{display:flex;align-items:center;gap:8px;min-width:0}
 .job .title{font-weight:700;font-size:14.5px;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -342,19 +348,33 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
 .toast.out{animation:toastOut .24s ease-in both}
 @keyframes toastOut{to{opacity:0;transform:translateX(24px)}}
 
-/* ============================================================== player */
-.player{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:20px;
-  background:rgba(6,6,9,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-  animation:fade .2s ease-out both}
-.player-box{width:min(920px,100%);background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);
-  box-shadow:0 30px 80px rgba(0,0,0,.6);overflow:hidden;animation:playerIn .28s var(--ease) both}
-@keyframes playerIn{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
-.player-head{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
-.player-title{flex:1;min-width:0;font-weight:750;font-size:14.5px;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.player-stage{background:#000;display:grid;place-items:center}
-.player-stage video{width:100%;max-height:74vh;display:block;background:#000}
-.player-stage audio{width:calc(100% - 32px);margin:26px 16px;display:block}
-.player-stage .cover{width:100%;max-height:74vh;object-fit:contain;display:block}
+/* ======================================================= inline player */
+/* Plays inside the job card itself (no popup window), with a simple themed
+   transport: play/pause, a seek slider and the time. */
+.plr{margin-top:14px;border:1px solid var(--line2);border-radius:var(--r);background:var(--panel2);
+  overflow:hidden;animation:plrIn .3s var(--ease) both}
+@keyframes plrIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.plr video{display:block;width:100%;max-height:420px;background:#000}
+.plr-cover{display:grid;place-items:center;padding:20px;background:radial-gradient(120% 120% at 30% 0%,rgba(255,138,76,.12),transparent 60%),#0b0b0f}
+.plr-cover img{width:min(260px,60%);aspect-ratio:1;object-fit:cover;border-radius:14px;box-shadow:0 18px 44px rgba(0,0,0,.55)}
+.plr-bar{display:flex;align-items:center;gap:14px;padding:12px 14px;border-top:1px solid var(--line)}
+.plr-play{flex:none;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,138,76,.35);cursor:pointer;
+  display:grid;place-items:center;color:#fff;background:linear-gradient(180deg,var(--accent),var(--accent2));
+  box-shadow:0 6px 18px rgba(255,94,58,.28);transition:transform .18s var(--ease),box-shadow .18s var(--ease)}
+.plr-play:hover{transform:scale(1.06);box-shadow:0 8px 24px rgba(255,94,58,.38)}
+.plr-play:active{transform:scale(.97)}
+.plr-play .ico{font-size:18px}
+.plr-seek{flex:1;min-width:0;display:flex;align-items:center;gap:12px}
+.plr-range{-webkit-appearance:none;appearance:none;flex:1;min-width:0;height:22px;background:transparent;cursor:pointer}
+.plr-range::-webkit-slider-runnable-track{height:6px;border-radius:99px;
+  background:linear-gradient(90deg,var(--accent) 0%,var(--accent2) var(--pp,0%),var(--panel3) var(--pp,0%),var(--panel3) 100%)}
+.plr-range::-moz-range-track{height:6px;border-radius:99px;background:var(--panel3)}
+.plr-range::-moz-range-progress{height:6px;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.plr-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;
+  margin-top:-4px;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.plr-range::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.plr-time{flex:none;font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--muted);min-width:88px;text-align:right}
+.plr-title{flex:none;max-width:34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;font-size:13px;color:var(--text2)}
 
 @media(prefers-reduced-motion:reduce){
   *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
@@ -419,12 +439,6 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
 </div>
 
 <div id="toasts"></div>
-<div id="player" class="player" hidden>
-  <div class="player-box">
-    <div class="player-head"><span class="player-title" id="playerTitle"></span><button class="btn btn-ghost btn-sm btn-icon" id="playerClose" aria-label="Close player"></button></div>
-    <div class="player-stage" id="playerStage"></div>
-  </div>
-</div>
 
 <script>
 "use strict";
@@ -432,7 +446,7 @@ const $ = s => document.querySelector(s);
 const ACTIVE = new Set(["queued","downloading","processing","active","waiting","paused","resolving"]);
 const isActive = s => ACTIVE.has(s);
 const DONE = new Set(["done","error","cancelled","complete","removed"]);
-const QUALITIES = { mp3:["320kbps","256kbps","192kbps","128kbps"], mp4:["1080p","720p","480p","360p","best"] };
+const QUALITIES = { mp3:["320kbps","192kbps","128kbps"], mp4:["1080p","720p","480p"] };
 const store = {
   get k(){ return localStorage; },
   get(type, d){ const v=this.k.getItem("ydl."+type); return v===null?d:v; },
@@ -459,6 +473,7 @@ const ICONS = {
   info:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5"/><path d="M12 8h.01"/></svg>',
   music:'<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
   play:'<svg viewBox="0 0 24 24"><path d="M7 4.8v14.4L19.5 12 7 4.8Z"/></svg>',
+  pause:'<svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg>',
   bolt:'<svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z"/></svg>',
   onion:'<svg viewBox="0 0 24 24"><path d="M12 5.5c-3.4 0-5.7 2.8-5.7 6.5S8.6 18.5 12 18.5s5.7-2.8 5.7-6.5S15.4 5.5 12 5.5Z"/><path d="M12 5.5c0-1.3.8-2.3 2-2.5-.1 1.4-.9 2.5-2 2.5Z"/><path d="M8 12h8M9.5 15h5"/></svg>',
   globe:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17"/><path d="M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"/></svg>',
@@ -525,7 +540,11 @@ function applyUpdate(u){
       }
       toast("Download finished", (j.title||"")+" — use Save to get it on this device", "ok");
     }
-    if(j.status==="error") toast("Download failed", (j.error||"").split("\n")[0], "err");
+    if(j.status==="error"){
+      // Never an empty toast: the job card shows the full reason.
+      const why=(j.error||"").split("\n")[0].trim();
+      toast("Download failed", why || "see the message on the download card", "err");
+    }
     if(isActive(prev)!==isActive(j.status)) layout();
   }
   patch(j);
@@ -616,9 +635,15 @@ function patch(j){
   const title = j.title || j.url || j.id;
   if(n._t!==title){ n._t=title; q(".title").textContent=title; n.title=title; }
   const th = q(".thumb");
-  const thumbKey = (j.thumb||"")+"|"+j.type;
+  const thumbKey = (j.thumb||"")+"|"+j.type+"|"+j.status;
   if(n._tk!==thumbKey){ n._tk=thumbKey;
-    th.innerHTML = j.thumb ? '<img loading="lazy" src="'+esc(j.thumb)+'" alt="" onerror="this.remove()">' : iconFor(j);
+    // Clicking the cover photo plays the file right here in the card - the
+    // same action as the Watch/Listen button, just closer to the artwork.
+    const canPlay = j.status==="done" && isPlayable(j);
+    th.classList.toggle("clickable", canPlay);
+    th.title = canPlay ? (j.type==="mp3" ? "Listen here" : "Watch here") : "";
+    th.onclick = canPlay ? () => openPlayer(j) : null;
+    th.innerHTML = j.thumb ? '<img loading="lazy" src="'+esc(j.thumb)+'" alt="" onerror="this.remove()">' + (canPlay ? '<span class="thumb-play">'+icon("play")+'</span>' : "") : iconFor(j);
   }
   const cls = j.status==="done" ? "done"
     : j.status==="error" ? "error"
@@ -752,34 +777,109 @@ function isPlayable(j){
   return j.type === "mp3" || j.type === "mp4";
 }
 
-function openPlayer(j){
-  const stage=$("#playerStage");
-  $("#playerTitle").textContent = j.title || j.url || "Player";
-  const isAudio = j.type === "mp3";
-  stage.innerHTML = "";
-  if(isAudio){
-    // For audio, show the cover art above the transport controls.
-    if(j.thumb){
-      const img=document.createElement("img"); img.className="cover"; img.src=j.thumb; img.alt="";
-      img.style.maxWidth="320px"; img.style.margin="26px auto 0"; img.style.borderRadius="12px";
-      img.onerror=()=>img.remove();
-      stage.appendChild(img);
-    }
-    const au=document.createElement("audio"); au.controls=true; au.autoplay=true; au.src=streamUrl(j);
-    stage.appendChild(au);
-  } else {
-    const vd=document.createElement("video"); vd.controls=true; vd.autoplay=true; vd.playsInline=true; vd.src=streamUrl(j);
-    if(j.thumb){ vd.poster=j.thumb; }
-    stage.appendChild(vd);
-  }
-  $("#player").hidden=false;
-  document.body.style.overflow="hidden";
+/* -------------------------------------------------- inline card player */
+/* Plays right inside the finished job's own card - no popup window - with a
+   simple themed transport (play/pause, seek slider, time). Only one card
+   can play at a time. */
+let activePlayer = null;   // { node, media, btn, range, time }
+
+function fmtTime(sec){
+  if(!isFinite(sec) || sec < 0) return "0:00";
+  sec = Math.floor(sec);
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+function ppIcon(playing){
+  return playing ? icon("pause") : icon("play");
+}
+function paintRange(range, media){
+  const pct = media && isFinite(media.duration) && media.duration > 0
+    ? (media.currentTime / media.duration) * 100 : 0;
+  range.style.setProperty("--pp", pct.toFixed(2) + "%");
+  range.value = pct;
 }
 function closePlayer(){
-  const stage=$("#playerStage");
-  $("#player").hidden=true;
-  stage.innerHTML="";           // stops playback
-  document.body.style.overflow="";
+  if(!activePlayer) return;
+  const { node, media } = activePlayer;
+  media.pause();
+  media.removeAttribute("src");
+  node.remove();
+  activePlayer = null;
+}
+function openPlayer(j){
+  closePlayer();                        // one player at a time
+  const card = nodes.get(j.id);
+  if(!card) return;
+  const isAudio = j.type === "mp3";
+  const node = document.createElement("div");
+  node.className = "plr";
+
+  let media;
+  if(isAudio){
+    const box = document.createElement("div");
+    box.className = "plr-cover";
+    if(j.thumb){
+      const img = document.createElement("img");
+      img.src = j.thumb; img.alt = "";
+      img.onerror = () => img.remove();
+      box.appendChild(img);
+    }
+    node.appendChild(box);
+    media = document.createElement("audio");
+    media.src = streamUrl(j);
+    node.appendChild(media);
+  } else {
+    media = document.createElement("video");
+    media.playsInline = true;
+    media.preload = "metadata";
+    media.src = streamUrl(j);
+    if(j.thumb) media.poster = j.thumb;
+    node.appendChild(media);
+  }
+
+  // ---- themed transport bar
+  const bar = document.createElement("div"); bar.className = "plr-bar";
+  const btn = document.createElement("button"); btn.className = "plr-play";
+  btn.title = "Play / pause"; btn.setAttribute("aria-label", "Play"); btn.innerHTML = icon("play");
+  const seek = document.createElement("div"); seek.className = "plr-seek";
+  const range = document.createElement("input"); range.type = "range"; range.className = "plr-range";
+  range.min = 0; range.max = 100; range.value = 0; range.step = 0.1;
+  range.setAttribute("aria-label", "Seek");
+  const time = document.createElement("span"); time.className = "plr-time"; time.textContent = "0:00 / 0:00";
+  const title = document.createElement("span"); title.className = "plr-title";
+  title.textContent = j.title || j.url || ""; title.title = title.textContent;
+  seek.appendChild(range); seek.appendChild(time);
+  bar.appendChild(btn); bar.appendChild(seek); bar.appendChild(title);
+  node.appendChild(bar);
+  card.appendChild(node);
+
+  let dragging = false;
+  const onPlayPause = () => {
+    if(media.paused) media.play().catch(() => {}); else media.pause();
+  };
+  btn.onclick = onPlayPause;
+  media.onplay = () => { btn.innerHTML = ppIcon(true); btn.title = "Pause"; btn.setAttribute("aria-label", "Pause"); };
+  media.onpause = () => { btn.innerHTML = ppIcon(false); btn.title = "Play"; btn.setAttribute("aria-label", "Play"); };
+  media.onloadedmetadata = () => { paintRange(range, media); time.textContent = "0:00 / " + fmtTime(media.duration); };
+  media.ontimeupdate = () => {
+    if(!dragging) paintRange(range, media);
+    time.textContent = fmtTime(media.currentTime) + " / " + fmtTime(media.duration);
+  };
+  media.onended = () => { media.currentTime = 0; paintRange(range, media); btn.innerHTML = ppIcon(false); };
+  media.onerror = () => { time.textContent = "unavailable"; };
+  // while dragging, only preview; release seeks
+  range.oninput = () => {
+    dragging = true;
+    range.style.setProperty("--pp", range.value + "%");
+    if(isFinite(media.duration)) time.textContent = fmtTime(media.duration * +range.value / 100) + " / " + fmtTime(media.duration);
+  };
+  range.onchange = () => {
+    dragging = false;
+    if(isFinite(media.duration)) media.currentTime = media.duration * +range.value / 100;
+  };
+
+  activePlayer = { node, media, btn, range, time };
+  media.play().catch(() => {});         // autoplay may be refused; user clicks play
 }
 async function saveFile(j, btn){
   const url=fileUrl(j);
@@ -942,11 +1042,12 @@ async function loadVersion(){
 
 /* ---------------------------------------------------------------- input */
 function applyQuality(){
+  // Fixed, predictable options only: a plain "1080p / 720p / 480p" (or
+  // "320/192/128kbps") list. Previously the raw formats returned by the
+  // resolver replaced this dropdown, which surfaced odd values such as
+  // "387kbps" or "144p" that the downloader cannot build a selector from.
   const type=$("#selType").value;
-  let values = (meta && Array.isArray(meta.formats))
-    ? [...new Set(meta.formats.filter(f=>f.media_type===type).map(f=>f.quality).filter(Boolean))]
-    : [];
-  if(!values.length) values = QUALITIES[type];
+  const values = QUALITIES[type] || [];
   const sel=$("#selQuality"), prev=sel.value;
   sel.innerHTML=values.map(v=>"<option>"+esc(v)+"</option>").join("");
   sel.value = values.includes(prev) ? prev : values[0];
@@ -965,9 +1066,13 @@ $("#selType").addEventListener("change", ()=>{ store.set("type",$("#selType").va
 $("#selRoute").addEventListener("change", ()=>{ store.set("route",$("#selRoute").value); });
 $("#autoDl").addEventListener("change", ()=>{ store.set("autodl", $("#autoDl").checked?"1":"0"); });
 $("#embedThumb").addEventListener("change", ()=>{ store.set("embed", $("#embedThumb").checked?"1":"0"); });
-$("#playerClose").addEventListener("click", closePlayer);
-$("#player").addEventListener("click", e=>{ if(e.target===$("#player")) closePlayer(); });
-document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#player").hidden) closePlayer(); });
+// Esc closes the inline player; space toggles play/pause while it is open.
+document.addEventListener("keydown", e=>{
+  if(e.key==="Escape" && activePlayer) closePlayer();
+  else if(e.key===" " && activePlayer && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+    e.preventDefault(); activePlayer.media.paused ? activePlayer.media.play().catch(()=>{}) : activePlayer.media.pause();
+  }
+});
 $("#url").addEventListener("input", ()=>{
   autoGrow(); syncGoLabel();
   clearTimeout(resolveTimer);
@@ -1015,7 +1120,6 @@ async function start(){
   $("#logoMark").innerHTML=ICONS.download;
   $("#goIcon").innerHTML=ICONS.download;
   $("#clearIcon").innerHTML=ICONS.close;
-  $("#playerClose").innerHTML=ICONS.close;
   $("#tabActiveIcon").innerHTML=ICONS.bolt;
   $("#tabHistoryIcon").innerHTML=ICONS.clock;
   $("#delSelIcon").innerHTML=ICONS.trash;

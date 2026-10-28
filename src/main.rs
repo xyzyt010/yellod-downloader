@@ -7,6 +7,7 @@ mod ws;
 mod aria2;
 mod config;
 mod net;
+mod clidownload;
 
 use axum::{
     routing::{get, post},
@@ -45,6 +46,7 @@ async fn main() {
         if cfg.yt_clients.trim().is_empty() { "yt-dlp default".to_string() } else { cfg.yt_clients.clone() },
         if cfg.tor_control_socket.is_empty() { "off".to_string() } else { cfg.tor_control_socket.clone() }
     );
+    tracing::info!("downloaders: {}", clidownload::Downloaders::detect().summary());
     let tor_control = net::TorControl::from_config(&cfg);
     let resolver = Arc::new(resolver::Resolver::new(
         cfg.ytdlp_binary_path.clone(),
