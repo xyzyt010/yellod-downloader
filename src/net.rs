@@ -1,71 +1,27 @@
-use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Remembers, per host, whether a direct download recently worked or the
-/// host had to go through the configured proxy (e.g. Tor). Entries expire
-/// after `ttl`, so blocked/unblocked networks are re-learned automatically.
-pub struct RouteCache {
-    map: DashMap<String, (bool, Instant)>,
-    ttl: Duration,
-}
-
-impl RouteCache {
-    pub fn new() -> Self {
-        Self {
-            map: DashMap::new(),
-            ttl: Duration::from_secs(1800),
-        }
-    }
-
-    /// Some(true) = direct recently worked, Some(false) = proxy required.
-    pub fn lookup(&self, host: &str) -> Option<bool> {
-        if host.is_empty() {
-            return None;
-        }
-        let entry = self.map.get(host)?;
-        let (direct_ok, at) = *entry.value();
-        if at.elapsed() < self.ttl {
-            Some(direct_ok)
-        } else {
-            None
-        }
-    }
-
-    pub fn mark(&self, host: &str, direct_ok: bool) {
-        if host.is_empty() {
-            return;
-        }
-        self.map.insert(host.to_string(), (direct_ok, Instant::now()));
-    }
-
-    /// Decide whether this request should start through the proxy.
-    ///
-    /// mode: global setting ("auto" | "always" | "never")
-    /// override: per-request choice ("auto" | "direct" | "proxy")
-    pub fn use_proxy(
-        &self,
-        host: &str,
-        mode: &str,
-        override_mode: Option<&str>,
-        proxy_available: bool,
-    ) -> bool {
-        let effective = match override_mode {
-            Some(o) if !o.is_empty() && o != "auto" => o,
-            _ => mode,
-        };
-        match effective {
-            "direct" | "never" | "off" | "none" => false,
-            "proxy" | "always" | "tor" | "on" => proxy_available,
-            // auto: use the proxy only when the host is known to need it;
-            // first contact tries direct (and falls back on failure).
-            _ => {
-                if !proxy_available {
-                    return false;
-                }
-                matches!(self.lookup(host), Some(false))
-            }
-        }
+/// Decide whether a request should start through the proxy.
+///
+/// mode: global setting ("auto" | "always" | "never")
+/// override: per-request choice ("auto" | "direct" | "proxy")
+pub fn start_with_proxy(
+    mode: &str,
+    override_mode: Option<&str>,
+    proxy_available: bool,
+) -> bool {
+    let effective = match override_mode {
+        Some(o) if !o.is_empty() && o != "auto" => o,
+        _ => mode,
+    };
+    match effective {
+        "direct" | "never" | "off" | "none" => false,
+        "proxy" | "always" | "tor" | "on" => proxy_available,
+        // auto: always start direct, then fall back to the proxy. "Auto
+        // (direct → Tor)" must mean the same thing on every job, not "Tor
+        // because the previous attempt needed it"; callers queue the other
+        // route when the first attempt fails.
+        _ => false,
     }
 }
 

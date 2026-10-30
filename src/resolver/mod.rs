@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use crate::api::{ResolveRequest, ResolveResponse, FormatInfo};
-use crate::net::{self, RouteCache};
+use crate::net;
 
 type Cache = Arc<RwLock<HashMap<String, CachedResolve>>>;
 
@@ -21,7 +21,6 @@ pub struct Resolver {
     proxy_url: String,
     proxy_mode: String,
     cookies_path: String,
-    routes: Arc<RouteCache>,
     js_runtime: Option<&'static str>,
     /// Tor control access for circuit rotation (see [`net::TorControl`]).
     tor: net::TorControl,
@@ -35,7 +34,6 @@ impl Resolver {
         proxy_url: String,
         proxy_mode: String,
         cookies_path: String,
-        routes: Arc<RouteCache>,
         js_runtime: Option<&'static str>,
         tor: net::TorControl,
     ) -> Self {
@@ -51,7 +49,6 @@ impl Resolver {
                 if m.is_empty() { "never".into() } else { m }
             },
             cookies_path,
-            routes,
             js_runtime,
             tor,
         }
@@ -127,18 +124,9 @@ impl Resolver {
         let host = net::host_of(url);
         let proxy_available = !self.proxy_url.is_empty();
 
-        let mut first_proxy =
-            self.routes.use_proxy(&host, &self.proxy_mode, None, proxy_available);
-        // Same YouTube-first-through-proxy seed as the download path: avoids
-        // a doomed direct extraction on every cold start.
-        if !first_proxy
-            && proxy_available
-            && self.proxy_mode == "auto"
-            && net::is_youtube(url)
-            && self.routes.lookup(&host) != Some(true)
-        {
-            first_proxy = true;
-        }
+        // Same order as downloads: auto = direct first, Tor second.
+        let first_proxy =
+            net::start_with_proxy(&self.proxy_mode, None, proxy_available);
         let mut attempts = vec![first_proxy];
         if self.proxy_mode == "auto" && proxy_available {
             attempts.push(!first_proxy);
@@ -154,18 +142,22 @@ impl Resolver {
         while let Some(&use_proxy) = attempts.get(idx) {
             match self.resolve_ytdlp_once(url, use_proxy).await {
                 Ok(response) => {
-                    self.routes.mark(&host, !use_proxy);
                     return Ok(response);
                 }
                 Err(e) => {
+                    tracing::info!(
+                        "resolve: {} attempt failed: {}",
+                        if use_proxy { "proxy" } else { "direct" },
+                        e
+                    );
                     if !use_proxy && net::looks_like_route_error(&e) {
-                        self.routes.mark(&host, false);
+                        tracing::debug!("resolve: direct route failed for {}", host);
                     }
-                    if use_proxy
-                        && self.tor.enabled()
-                        && net::looks_like_route_error(&e)
-                        && rotations < MAX_CIRCUIT_ROTATIONS
-                    {
+                    // Rotate on *any* proxied failure: some YouTube bot
+                    // walls surface as an opaque exit code rather than a
+                    // recognizable message, and a fresh exit is the only
+                    // remedy. Bounded to avoid loops on dead proxies.
+                    if use_proxy && self.tor.enabled() && rotations < MAX_CIRCUIT_ROTATIONS {
                         rotations += 1;
                         tracing::info!("resolve: route failure via proxy, requesting a new Tor circuit");
                         if let Err(ce) = self.tor.newnym().await {

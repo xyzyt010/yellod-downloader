@@ -134,7 +134,11 @@ fn default_cookies_path() -> String {
 /// (set empty to fall back to yt-dlp's own defaults).
 fn default_yt_clients() -> String {
     std::env::var("DOWNLOADER_YT_CLIENTS")
-        .unwrap_or_else(|_| "tv_simply,android_vr,android".into())
+        // `tv_simply` only serves ~1 MB of media per URL through Tor before
+        // the CDN starts returning 403, which broke most UMG music videos.
+        // `default` (TVHTML5), `tv_embedded` and `web_embedded` download the
+        // whole file through the same exit, so they are tried in that order.
+        .unwrap_or_else(|_| "default,tv_embedded,web_embedded".into())
 }
 
 /// Extra CLI downloaders tried after yt-dlp itself fails, in order.

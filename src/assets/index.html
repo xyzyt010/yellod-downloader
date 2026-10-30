@@ -351,12 +351,12 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
 /* ======================================================= inline player */
 /* Plays inside the job card itself (no popup window), with a simple themed
    transport: play/pause, a seek slider and the time. */
-.plr{margin-top:14px;border:1px solid var(--line2);border-radius:var(--r);background:var(--panel2);
-  overflow:hidden;animation:plrIn .3s var(--ease) both}
+.plr{grid-column:1/-1;margin-top:2px;border:1px solid var(--line2);border-radius:var(--r);background:var(--panel2);
+  overflow:hidden;animation:plrIn .3s var(--ease) both;min-width:0}
 @keyframes plrIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 .plr video{display:block;width:100%;max-height:420px;background:#000}
-.plr-cover{display:grid;place-items:center;padding:20px;background:radial-gradient(120% 120% at 30% 0%,rgba(255,138,76,.12),transparent 60%),#0b0b0f}
-.plr-cover img{width:min(260px,60%);aspect-ratio:1;object-fit:cover;border-radius:14px;box-shadow:0 18px 44px rgba(0,0,0,.55)}
+.plr-cover{display:grid;place-items:center;padding:16px;background:radial-gradient(120% 120% at 30% 0%,rgba(255,138,76,.12),transparent 60%),#0b0b0f}
+.plr-cover img{width:min(190px,46%);aspect-ratio:1;object-fit:cover;border-radius:14px;box-shadow:0 18px 44px rgba(0,0,0,.55)}
 .plr-bar{display:flex;align-items:center;gap:14px;padding:12px 14px;border-top:1px solid var(--line)}
 .plr-play{flex:none;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,138,76,.35);cursor:pointer;
   display:grid;place-items:center;color:#fff;background:linear-gradient(180deg,var(--accent),var(--accent2));
@@ -375,6 +375,15 @@ code{background:var(--panel3);border:1px solid var(--line);border-radius:7px;pad
 .plr-range::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.5)}
 .plr-time{flex:none;font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--muted);min-width:88px;text-align:right}
 .plr-title{flex:none;max-width:34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;font-size:13px;color:var(--text2)}
+.plr-close{flex:none;width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel3);
+  color:var(--muted);cursor:pointer;display:grid;place-items:center;transition:color .16s,border-color .16s,background .16s}
+.plr-close:hover{color:var(--text);border-color:var(--line2);background:#22222b}
+.plr-close .ico{font-size:15px}
+@media(max-width:640px){
+  .plr-title{display:none}
+  .plr-bar{gap:10px;padding:10px}
+  .plr-time{min-width:0}
+}
 
 @media(prefers-reduced-motion:reduce){
   *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
@@ -550,8 +559,10 @@ function applyUpdate(u){
   patch(j);
 }
 function removeLocal(id){
+  const n=nodes.get(id);
+  if(activePlayer && n && n.contains(activePlayer.node)) closePlayer();
   jobs.delete(id);
-  const n=nodes.get(id); if(n) n.remove();
+  if(n) n.remove();
   nodes.delete(id); selected.delete(id);
   layout();
 }
@@ -642,7 +653,7 @@ function patch(j){
     const canPlay = j.status==="done" && isPlayable(j);
     th.classList.toggle("clickable", canPlay);
     th.title = canPlay ? (j.type==="mp3" ? "Listen here" : "Watch here") : "";
-    th.onclick = canPlay ? () => openPlayer(j) : null;
+    th.onclick = canPlay ? () => togglePlayer(j) : null;
     th.innerHTML = j.thumb ? '<img loading="lazy" src="'+esc(j.thumb)+'" alt="" onerror="this.remove()">' + (canPlay ? '<span class="thumb-play">'+icon("play")+'</span>' : "") : iconFor(j);
   }
   const cls = j.status==="done" ? "done"
@@ -694,7 +705,7 @@ function patch(j){
       // Inline player for anything the browser can render (mp4/mp3/webm/…).
       if(isPlayable(j)){
         const p=document.createElement("button"); p.className="btn btn-ghost btn-sm"; p.innerHTML=icon("play")+(j.type==="mp3"?"Listen":"Watch");
-        p.title="Play it here — no download needed"; p.onclick=()=>openPlayer(j); acts.appendChild(p);
+        p.title="Play it here — no download needed"; p.onclick=()=>togglePlayer(j); acts.appendChild(p);
       }
       const a=document.createElement("button"); a.className="btn btn-ghost btn-sm"; a.innerHTML=icon("download")+"Save";
       a.title="Save the file on this device";
@@ -744,8 +755,24 @@ function layout(){
   if(list.firstElementChild && list.firstElementChild.classList.contains("empty")) {
     list.innerHTML=""; nodes.forEach(n=>n.remove()); nodes.clear();
   }
-  for(const j of vis){ const n=ensureNode(j); list.appendChild(n); patch(j); }
-  for(const [id,n] of nodes) if(!vis.find(j=>j.id===id) && n.parentNode===list) n.remove();
+  // Keep the existing DOM order instead of re-appending every card on each
+  // layout pass: moving a card also moves its inline player, and re-appending
+  // a <video> can make the browser interrupt playback. Only move a node when
+  // it is genuinely out of place.
+  let prev=null;
+  for(const j of vis){
+    const n=ensureNode(j);
+    const want = prev ? prev.nextSibling : list.firstChild;
+    if(n!==want) list.insertBefore(n, want);
+    prev=n;
+    patch(j);
+  }
+  for(const [id,n] of nodes){
+    if(!vis.find(j=>j.id===id) && n.parentNode===list){
+      if(activePlayer && n.contains(activePlayer.node)) closePlayer();
+      n.remove();
+    }
+  }
   const ids=new Set(vis.map(j=>j.id));
   for(const id of [...selected]) if(!ids.has(id)) selected.delete(id);
   paintToolbar();
@@ -801,10 +828,14 @@ function paintRange(range, media){
 function closePlayer(){
   if(!activePlayer) return;
   const { node, media } = activePlayer;
+  activePlayer = null;
   media.pause();
   media.removeAttribute("src");
   node.remove();
-  activePlayer = null;
+}
+function togglePlayer(j){
+  if(activePlayer && activePlayer.id === j.id){ closePlayer(); return; }
+  openPlayer(j);
 }
 function openPlayer(j){
   closePlayer();                        // one player at a time
@@ -826,6 +857,7 @@ function openPlayer(j){
     }
     node.appendChild(box);
     media = document.createElement("audio");
+    media.preload = "metadata";
     media.src = streamUrl(j);
     node.appendChild(media);
   } else {
@@ -848,8 +880,11 @@ function openPlayer(j){
   const time = document.createElement("span"); time.className = "plr-time"; time.textContent = "0:00 / 0:00";
   const title = document.createElement("span"); title.className = "plr-title";
   title.textContent = j.title || j.url || ""; title.title = title.textContent;
+  const close = document.createElement("button"); close.className = "plr-close";
+  close.title = "Close player"; close.setAttribute("aria-label", "Close player");
+  close.innerHTML = icon("close"); close.onclick = closePlayer;
   seek.appendChild(range); seek.appendChild(time);
-  bar.appendChild(btn); bar.appendChild(seek); bar.appendChild(title);
+  bar.appendChild(btn); bar.appendChild(seek); bar.appendChild(title); bar.appendChild(close);
   node.appendChild(bar);
   card.appendChild(node);
 
@@ -878,7 +913,7 @@ function openPlayer(j){
     if(isFinite(media.duration)) media.currentTime = media.duration * +range.value / 100;
   };
 
-  activePlayer = { node, media, btn, range, time };
+  activePlayer = { id: j.id, node, media, btn, range, time };
   media.play().catch(() => {});         // autoplay may be refused; user clicks play
 }
 async function saveFile(j, btn){
@@ -939,6 +974,7 @@ async function deleteAll(){
   if(!items().length) return;
   if(!confirm("Delete ALL jobs? This also removes their files from disk.")) return;
   try{ await fetch("/api/jobs/delete/all",{method:"POST"}); }catch{}
+  closePlayer();
   jobs.clear(); nodes.forEach(n=>n.remove()); nodes.clear(); selected.clear(); layout();
   toast("History cleared","All files were removed from disk");
 }

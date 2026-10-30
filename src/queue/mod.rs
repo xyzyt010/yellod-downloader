@@ -12,7 +12,7 @@ use crate::aria2::Aria2Client;
 use crate::resolver::Resolver;
 use crate::ws::WsHub;
 use crate::config::AppConfig;
-use crate::net::{self, RouteCache};
+use crate::net::{self};
 
 /// Shared progress state of a running download.
 ///
@@ -76,7 +76,6 @@ pub struct QueueManager {
     pub config: Arc<AppConfig>,
     pub active_jobs: Arc<RwLock<HashMap<String, ActiveJob>>>,
     pub semaphore: Arc<Semaphore>,
-    pub route_cache: Arc<RouteCache>,
     /// Running yt-dlp child processes, so cancel can actually kill them.
     children: Arc<DashMap<String, Arc<Mutex<tokio::process::Child>>>>,
     cancelled: Arc<DashSet<String>>,
@@ -97,7 +96,6 @@ impl QueueManager {
         resolver: Arc<Resolver>,
         ws_hub: Arc<WsHub>,
         config: Arc<AppConfig>,
-        route_cache: Arc<RouteCache>,
         tor: net::TorControl,
     ) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
@@ -111,7 +109,6 @@ impl QueueManager {
             config,
             active_jobs: Arc::new(RwLock::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            route_cache,
             children: Arc::new(DashMap::new()),
             cancelled: Arc::new(DashSet::new()),
             js_runtime: net::detect_js_runtime(),
@@ -242,7 +239,6 @@ impl QueueManager {
 
     // ------------------------------------------------------------- yt-dlp
     async fn process_ytdlp(&self, id: &str, spec: &JobSpec) -> Result<String, String> {
-        let host = net::host_of(&spec.url);
         let proxy_available = !self.proxy_url.is_empty();
         let override_mode = spec.connection.as_deref();
 
@@ -250,20 +246,9 @@ impl QueueManager {
             Some(o) if !o.is_empty() && o != "auto" => o.to_string(),
             _ => self.proxy_mode.clone(),
         };
-        let mut first_proxy =
-            self.route_cache.use_proxy(&host, &self.proxy_mode, override_mode, proxy_available);
-        // YouTube bot-walls datacenter IPs on direct attempts and flags many
-        // Tor exits, so unless direct is *known* to work for this host, start
-        // through the proxy instead of burning a doomed first attempt. The
-        // auto fallback below still covers both directions.
-        if !first_proxy
-            && proxy_available
-            && effective_mode == "auto"
-            && net::is_youtube(&spec.url)
-            && self.route_cache.lookup(&host) != Some(true)
-        {
-            first_proxy = true;
-        }
+        // Auto means exactly what the UI says: direct first, Tor second.
+        let first_proxy =
+            net::start_with_proxy(&self.proxy_mode, override_mode, proxy_available);
         let mut attempts: Vec<bool> = vec![first_proxy];
         // In auto mode, transparently retry the other way once (direct → Tor
         // when a site blocks this server, Tor → direct when the proxy fails).
@@ -309,7 +294,6 @@ impl QueueManager {
                         return Err("cancelled".into());
                     }
                     let route = net::route_label(use_proxy, &self.proxy_url);
-                    self.route_cache.mark(&host, !use_proxy);
                     let _ = self.db.set_job_route(id, route);
                     self.active_jobs.write().await.entry(id.to_string()).and_modify(|j| j.route = route.to_string());
                     return Ok(path);
@@ -318,19 +302,15 @@ impl QueueManager {
                     if self.cancelled.contains(id) {
                         return Err("cancelled".into());
                     }
-                    // Remember hosts that need the proxy (and forget hosts
-                    // where direct worked), so the next job starts fast.
-                    if !use_proxy && net::looks_like_route_error(&e) {
-                        self.route_cache.mark(&host, false);
-                    }
-                    // Route failure *through* the proxy: this exit IP is
-                    // likely flagged - swap the circuit and queue one more
-                    // proxied attempt (bounded, so a dead proxy can't loop).
-                    if use_proxy
-                        && self.tor.enabled()
-                        && net::looks_like_route_error(&e)
-                        && rotations < MAX_CIRCUIT_ROTATIONS
-                    {
+                    // Any failure *through* the proxy: this exit IP is the
+                    // prime suspect, so swap the circuit and queue one more
+                    // proxied attempt. Rotating unconditionally matters
+                    // because some bot-wall errors arrive as opaque exit
+                    // codes (\"yt-dlp exited with exit status: 1\") that the
+                    // error classifier cannot match; previously those
+                    // skipped rotation and the job died after a single exit.
+                    // Bounded, so a dead proxy cannot loop forever.
+                    if use_proxy && self.tor.enabled() && rotations < MAX_CIRCUIT_ROTATIONS {
                         rotations += 1;
                         tracing::info!(
                             "job {}: route failure via proxy, requesting a new Tor circuit",
@@ -343,6 +323,15 @@ impl QueueManager {
                         // direct attempt stays as the last resort.
                         attempts.insert(idx + 1, true);
                     }
+                    // Log every route's failure: the UI can only keep the
+                    // last one, but the journal must show why the Tor
+                    // attempt failed when the job ends on the direct route.
+                    tracing::info!(
+                        "job {}: {} attempt failed: {}",
+                        id,
+                        if use_proxy { "proxy" } else { "direct" },
+                        e
+                    );
                     last_error = e;
                     last_proxy = use_proxy;
                     if idx + 1 < attempts.len() {
@@ -720,6 +709,13 @@ impl QueueManager {
         })?;
 
         if !status.success() {
+            tracing::info!(
+                "job {}: yt-dlp exited {} with {} bytes of stderr: {}",
+                id,
+                status,
+                stderr_text.len(),
+                stderr_text.chars().take(500).collect::<String>()
+            );
             let _ = std::fs::remove_dir_all(&out_dir);
             return Err(cli_failure_message(&stderr_text, status));
         }
@@ -916,7 +912,6 @@ impl QueueManager {
             config: self.config.clone(),
             active_jobs: self.active_jobs.clone(),
             semaphore: self.semaphore.clone(),
-            route_cache: self.route_cache.clone(),
             children: self.children.clone(),
             cancelled: self.cancelled.clone(),
             js_runtime: self.js_runtime,
@@ -1047,7 +1042,16 @@ pub(crate) fn cli_failure_message(
                 let t = l.trim_start();
                 let msg = t.strip_prefix("ERROR:").unwrap_or(t).trim();
                 // Drop the bracketed extractor name and the id that follows.
-                let rest = msg.trim_start_matches(|c| c != ']').trim_start_matches(']');
+                // Only strip when the message actually starts with a bracket:
+                // a plain "Sign in to confirm…" has no ']' and used to be
+                // wiped entirely by trim_start_matches.
+                let rest = match msg.strip_prefix('[') {
+                    Some(inner) => match inner.find(']') {
+                        Some(pos) => inner[pos + 1..].trim_start(),
+                        None => msg,
+                    },
+                    None => msg,
+                };
                 let mut msg = rest.trim().to_string();
                 // ... then the "ID: " part is often noise too ("jNQXAC9IVRw: ").
                 if let Some(colon) = msg.find(": ") {

@@ -32,7 +32,6 @@ async fn main() {
     sweep_orphan_job_dirs(&db, &cfg.output_dir);
     let aria2_client = Arc::new(aria2::Aria2Client::new(cfg.aria2_rpc_url.clone()));
     let ws_hub = Arc::new(ws::WsHub::new());
-    let routes = Arc::new(net::RouteCache::new());
     let js_runtime = net::detect_js_runtime();
     tracing::info!(
         "deps: js-runtime={:?}, aria2c={}, proxy={:?} (mode={})",
@@ -55,7 +54,6 @@ async fn main() {
         cfg.proxy_url.clone(),
         cfg.proxy_mode.clone(),
         cfg.cookies_path.clone(),
-        routes.clone(),
         js_runtime,
         tor_control.clone(),
     ));
@@ -67,7 +65,6 @@ async fn main() {
         resolver.clone(),
         ws_hub.clone(),
         config.clone(),
-        routes.clone(),
         tor_control.clone(),
     ));
 
